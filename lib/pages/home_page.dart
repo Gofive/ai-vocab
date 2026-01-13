@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:ai_vocab/pages/dict_page.dart';
 import 'package:ai_vocab/pages/study_page.dart';
 import 'package:ai_vocab/pages/settings_page.dart';
+import 'package:ai_vocab/theme/app_theme.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -12,12 +13,27 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
+  final GlobalKey<StudyPageWrapperState> _studyPageKey = GlobalKey();
 
-  final List<Widget> _pages = [
-    const DictPage(),
-    const StudyPageWrapper(),
-    const SettingsPage(),
-  ];
+  late final List<Widget> _pages;
+
+  @override
+  void initState() {
+    super.initState();
+    _pages = [
+      const DictPage(),
+      StudyPageWrapper(key: _studyPageKey),
+      const SettingsPage(),
+    ];
+  }
+
+  void _onTabChanged(int index) {
+    setState(() => _currentIndex = index);
+    // 切换到学习页面时刷新数据
+    if (index == 1) {
+      _studyPageKey.currentState?.refresh();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -25,10 +41,12 @@ class _HomePageState extends State<HomePage> {
       body: IndexedStack(index: _currentIndex, children: _pages),
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: context.surfaceColor,
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
+              color: context.isDark
+                  ? Colors.black.withValues(alpha: 0.3)
+                  : Colors.black.withValues(alpha: 0.05),
               blurRadius: 20,
               offset: const Offset(0, -5),
             ),
@@ -58,20 +76,17 @@ class _HomePageState extends State<HomePage> {
     String label,
   ) {
     final isActive = _currentIndex == index;
-    final color = isActive
-        ? Theme.of(context).colorScheme.primary
-        : Colors.grey;
+    final primaryColor = Theme.of(context).colorScheme.primary;
+    final color = isActive ? primaryColor : context.textSecondary;
 
     return GestureDetector(
-      onTap: () => setState(() => _currentIndex = index),
+      onTap: () => _onTabChanged(index),
       behavior: HitTestBehavior.opaque,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         decoration: isActive
             ? BoxDecoration(
-                color: Theme.of(
-                  context,
-                ).colorScheme.primary.withValues(alpha: 0.1),
+                color: primaryColor.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(20),
               )
             : null,

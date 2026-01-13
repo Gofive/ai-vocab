@@ -41,7 +41,6 @@ dependencies:
   just_audio: ^0.9.35
   # 确保包含这个，它是 Windows 端的实际播放引擎
   just_audio_windows: ^0.2.2 # 按照报错建议更新到 0.2.2
-  google_fonts: ^6.1.0 # 极简字体
   flutter_riverpod: ^2.4.9 # 状态管理（选择词典/进度）
   path: ^1.9.1
   sqflite: ^2.4.2
@@ -79,22 +78,30 @@ flutter:
   # For details regarding adding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
 
-  # To add custom fonts to your application, add a fonts section here,
-  # in this "flutter" section. Each entry in this list should have a
-  # "family" key with the font family name, and a "fonts" key with a
-  # list giving the asset and other descriptors for the font. For
-  # example:
-  # fonts:
-  #   - family: Schyler
-  #     fonts:
-  #       - asset: fonts/Schyler-Regular.ttf
-  #       - asset: fonts/Schyler-Italic.ttf
-  #         style: italic
-  #   - family: Trajan Pro
-  #     fonts:
-  #       - asset: fonts/TrajanPro.ttf
-  #       - asset: fonts/TrajanPro_Bold.ttf
-  #         weight: 700
-  #
-  # For details regarding fonts from package dependencies,
-  # see https://flutter.dev/to/font-from-package
+  fonts:
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Regular.otf
+          weight: 400
+        - asset: assets/fonts/Inter-Medium.otf
+          weight: 500
+        - asset: assets/fonts/Inter-SemiBold.otf
+          weight: 600
+        - asset: assets/fonts/Inter-Bold.otf
+          weight: 700
+    - family: NotoSansSC
+      fonts:
+        - asset: assets/fonts/NotoSansSC-VariableFont_wght.ttf
+          weight: 100
+        - asset: assets/fonts/NotoSansSC-VariableFont_wght.ttf
+          weight: 300
+        - asset: assets/fonts/NotoSansSC-VariableFont_wght.ttf
+          weight: 400
+        - asset: assets/fonts/NotoSansSC-VariableFont_wght.ttf
+          weight: 500
+        - asset: assets/fonts/NotoSansSC-VariableFont_wght.ttf
+          weight: 600
+        - asset: assets/fonts/NotoSansSC-VariableFont_wght.ttf
+          weight: 700
+        - asset: assets/fonts/NotoSansSC-VariableFont_wght.ttf
+          weight: 900

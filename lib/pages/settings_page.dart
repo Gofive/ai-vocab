@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:ai_vocab/theme/app_theme.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -6,7 +7,7 @@ class SettingsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8FAFC),
+      backgroundColor: context.backgroundColor,
       body: SafeArea(
         child: CustomScrollView(
           slivers: [
@@ -16,22 +17,17 @@ class SettingsPage extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       '我的',
                       style: TextStyle(
                         fontSize: 28,
                         fontWeight: FontWeight.bold,
-                        color: Color(0xFF1E293B),
+                        color: context.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 32),
-
-                    // 用户卡片
                     _buildUserCard(context),
-
                     const SizedBox(height: 24),
-
-                    // 设置列表
                     _buildSettingsSection(context),
                   ],
                 ),
@@ -95,47 +91,57 @@ class SettingsPage extends StatelessWidget {
   Widget _buildSettingsSection(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: context.surfaceColor,
         borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 20,
-            offset: const Offset(0, 4),
-          ),
-        ],
+        boxShadow: context.isDark
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.04),
+                  blurRadius: 20,
+                  offset: const Offset(0, 4),
+                ),
+              ],
       ),
       child: Column(
         children: [
           _buildSettingItem(
+            context,
             icon: Icons.notifications_outlined,
             title: '学习提醒',
             subtitle: '每日提醒你学习',
             onTap: () {},
           ),
-          _buildDivider(),
+          _buildDivider(context),
           _buildSettingItem(
+            context,
             icon: Icons.dark_mode_outlined,
             title: '深色模式',
-            subtitle: '护眼模式',
-            trailing: Switch(value: false, onChanged: (v) {}),
+            subtitle: '跟随系统',
+            trailing: Icon(
+              context.isDark ? Icons.dark_mode : Icons.light_mode,
+              color: context.textSecondary,
+            ),
           ),
-          _buildDivider(),
+          _buildDivider(context),
           _buildSettingItem(
+            context,
             icon: Icons.volume_up_outlined,
             title: '发音设置',
             subtitle: '美式/英式发音',
             onTap: () {},
           ),
-          _buildDivider(),
+          _buildDivider(context),
           _buildSettingItem(
+            context,
             icon: Icons.delete_outline,
             title: '清除学习记录',
             subtitle: '重置所有进度',
             onTap: () {},
           ),
-          _buildDivider(),
+          _buildDivider(context),
           _buildSettingItem(
+            context,
             icon: Icons.info_outline,
             title: '关于',
             subtitle: 'v1.0.0',
@@ -146,7 +152,8 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
-  Widget _buildSettingItem({
+  Widget _buildSettingItem(
+    BuildContext context, {
     required IconData icon,
     required String title,
     required String subtitle,
@@ -159,30 +166,37 @@ class SettingsPage extends StatelessWidget {
         width: 44,
         height: 44,
         decoration: BoxDecoration(
-          color: const Color(0xFFF1F5F9),
+          color: context.isDark
+              ? AppTheme.darkDivider
+              : const Color(0xFFF1F5F9),
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Icon(icon, color: const Color(0xFF64748B)),
+        child: Icon(icon, color: context.textSecondary),
       ),
       title: Text(
         title,
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+        style: TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.w500,
+          color: context.textPrimary,
+        ),
       ),
       subtitle: Text(
         subtitle,
-        style: TextStyle(fontSize: 13, color: Colors.grey[500]),
+        style: TextStyle(fontSize: 13, color: context.textSecondary),
       ),
-      trailing: trailing ?? Icon(Icons.chevron_right, color: Colors.grey[400]),
+      trailing:
+          trailing ?? Icon(Icons.chevron_right, color: context.textSecondary),
       onTap: onTap,
     );
   }
 
-  Widget _buildDivider() {
+  Widget _buildDivider(BuildContext context) {
     return Divider(
       height: 1,
       indent: 80,
       endIndent: 20,
-      color: Colors.grey[200],
+      color: context.dividerColor,
     );
   }
 }

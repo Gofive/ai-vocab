@@ -30,6 +30,8 @@ class DictProgress {
   final int totalCount;
   final StudySettings settings;
   final DateTime? lastStudyTime;
+  final int todayNewCount; // 今日新学单词数
+  final int todayReviewCount; // 今日待复习数
 
   const DictProgress({
     required this.dictName,
@@ -37,6 +39,8 @@ class DictProgress {
     this.totalCount = 0,
     required this.settings,
     this.lastStudyTime,
+    this.todayNewCount = 0,
+    this.todayReviewCount = 0,
   });
 
   double get progress => totalCount > 0 ? learnedCount / totalCount : 0;

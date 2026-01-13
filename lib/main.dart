@@ -1,11 +1,14 @@
 import 'dart:io';
 
 import 'package:ai_vocab/pages/home_page.dart';
+import 'package:ai_vocab/theme/app_theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-void main() {
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // 桌面端初始化
@@ -23,7 +26,7 @@ void main() {
     ),
   );
 
-  runApp(const MyApp());
+  runApp(const ProviderScope(child: MyApp()));
 }
 
 class MyApp extends StatelessWidget {
@@ -34,14 +37,9 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'AI Vocab',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF6366F1),
-          brightness: Brightness.light,
-        ),
-        fontFamily: 'SF Pro Display',
-      ),
+      theme: AppTheme.lightTheme,
+      darkTheme: AppTheme.darkTheme,
+      themeMode: ThemeMode.system,
       home: const HomePage(),
     );
   }
