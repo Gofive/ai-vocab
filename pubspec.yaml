@@ -1,5 +1,5 @@
 name: ai_vocab
-description: "A new Flutter project."
+description: 'A new Flutter project.'
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -19,7 +19,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.10.7
+  sdk: ^3.10.4
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions
@@ -40,10 +40,11 @@ dependencies:
   path_provider: ^2.1.1
   just_audio: ^0.9.35
   # 确保包含这个，它是 Windows 端的实际播放引擎
-  just_audio_windows: ^0.2.2  # 按照报错建议更新到 0.2.2
-  google_fonts: ^6.1.0        # 极简字体
-  flutter_riverpod: ^2.4.9    # 状态管理（选择词典/进度）
+  just_audio_windows: ^0.2.2 # 按照报错建议更新到 0.2.2
+  google_fonts: ^6.1.0 # 极简字体
+  flutter_riverpod: ^2.4.9 # 状态管理（选择词典/进度）
   path: ^1.9.1
+  sqflite: ^2.4.2
 
 dev_dependencies:
   flutter_test:
@@ -61,7 +62,6 @@ dev_dependencies:
 
 # The following section is specific to Flutter packages.
 flutter:
-
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
   # the material Icons class.
