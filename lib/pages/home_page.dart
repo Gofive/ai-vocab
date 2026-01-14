@@ -21,8 +21,8 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _pages = [
-      const DictPage(),
       StudyPageWrapper(key: _studyPageKey),
+      const DictPage(),
       const SettingsPage(),
     ];
   }
@@ -30,7 +30,7 @@ class _HomePageState extends State<HomePage> {
   void _onTabChanged(int index) {
     setState(() => _currentIndex = index);
     // 切换到学习页面时刷新数据
-    if (index == 1) {
+    if (index == 0) {
       _studyPageKey.currentState?.refresh();
     }
   }
@@ -42,24 +42,18 @@ class _HomePageState extends State<HomePage> {
       bottomNavigationBar: Container(
         decoration: BoxDecoration(
           color: context.surfaceColor,
-          boxShadow: [
-            BoxShadow(
-              color: context.isDark
-                  ? Colors.black.withValues(alpha: 0.3)
-                  : Colors.black.withValues(alpha: 0.05),
-              blurRadius: 20,
-              offset: const Offset(0, -5),
-            ),
-          ],
+          border: Border(
+            top: BorderSide(color: context.dividerColor, width: 0.5),
+          ),
         ),
         child: SafeArea(
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildNavItem(0, Icons.book_outlined, Icons.book, '词典'),
-                _buildNavItem(1, Icons.school_outlined, Icons.school, '学习'),
+                _buildNavItem(0, Icons.school_outlined, Icons.school, '学习'),
+                _buildNavItem(1, Icons.book_outlined, Icons.book, '词典'),
                 _buildNavItem(2, Icons.person_outline, Icons.person, '我的'),
               ],
             ),
@@ -79,31 +73,23 @@ class _HomePageState extends State<HomePage> {
     final primaryColor = Theme.of(context).colorScheme.primary;
     final color = isActive ? primaryColor : context.textSecondary;
 
-    return GestureDetector(
-      onTap: () => _onTabChanged(index),
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        decoration: isActive
-            ? BoxDecoration(
-                color: primaryColor.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(20),
-              )
-            : null,
-        child: Row(
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => _onTabChanged(index),
+        behavior: HitTestBehavior.opaque,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Icon(isActive ? activeIcon : icon, color: color, size: 24),
-            if (isActive) ...[
-              const SizedBox(width: 8),
-              Text(
-                label,
-                style: TextStyle(
-                  color: color,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 14,
-                ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
+                fontSize: 11,
               ),
-            ],
+            ),
           ],
         ),
       ),

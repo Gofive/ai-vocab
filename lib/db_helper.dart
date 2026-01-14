@@ -63,7 +63,6 @@ class DBHelper {
       CREATE TABLE IF NOT EXISTS study_progress (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         dict_name TEXT UNIQUE NOT NULL,
-        learned_count INTEGER DEFAULT 0,
         daily_words INTEGER DEFAULT 20,
         study_mode INTEGER DEFAULT 0,
         last_study_time TEXT,
@@ -109,18 +108,6 @@ class DBHelper {
         is_review INTEGER DEFAULT 0,
         is_done INTEGER DEFAULT 0,
         FOREIGN KEY (session_id) REFERENCES study_session(id) ON DELETE CASCADE
-      )
-    ''');
-
-    // 旧表兼容（如果存在则迁移数据）
-    await db.execute('''
-      CREATE TABLE IF NOT EXISTS word_progress (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        word_id INTEGER NOT NULL,
-        dict_name TEXT NOT NULL,
-        is_learned INTEGER DEFAULT 0,
-        learn_time TEXT,
-        UNIQUE(word_id, dict_name)
       )
     ''');
   }
@@ -226,54 +213,66 @@ class DBHelper {
       );
     }
 
-    // 2. 获取今日新词统计
-    final todayStatsResult = await db.rawQuery(
-      '''
-      SELECT
-        SUM(CASE WHEN state = 1 THEN 1 ELSE 0 END) as learning_count,
-        SUM(CASE WHEN state = 2 THEN 1 ELSE 0 END) as mastered_count
-      FROM user_study_progress
-      WHERE dict_name = ? AND DATE(last_modified) = ?
-    ''',
-      [dictName, today],
+    // 2 & 3. 获取今日新词统计和待复习数量
+    // 如果有今日会话，从队列获取数据；否则从 user_study_progress 表获取
+    final sessionCheck = await db.query(
+      'study_session',
+      where: 'dict_name = ? AND session_date = ?',
+      whereArgs: [dictName, today],
     );
 
-    final int todayLearning =
-        (todayStatsResult.first['learning_count'] as int?) ?? 0;
-    final int todayMastered =
-        (todayStatsResult.first['mastered_count'] as int?) ?? 0;
+    int todayNewCount = 0;
+    int reviewCount = 0;
 
-    // 分子：包含学习中和已掌握的所有新词
-    final todayNewCount = todayLearning + todayMastered;
-    // 动态分母：设定目标 + 今日已秒杀(mastered)的量
-    final int dynamicDailyGoal = settings.dailyWords + todayMastered;
+    if (sessionCheck.isNotEmpty) {
+      // 有今日会话：从队列统计
+      final sessionId = sessionCheck.first['id'] as int;
 
-    // 3. 获取待复习数量
-    // 强制排除已掌握(state=2)的词，防止因状态同步延迟导致的异常计数
-    final reviewQuery = await db.rawQuery(
-      '''
-      SELECT COUNT(DISTINCT word_id) as count FROM (
-        -- 分部1：数据库进度表中到期且非熟练的词
-        SELECT word_id FROM user_study_progress
+      // 今日新词 = 队列中已完成的新词数量
+      final newWordsDoneResult = await db.rawQuery(
+        '''
+        SELECT COUNT(*) as count FROM study_session_queue
+        WHERE session_id = ? AND is_review = 0 AND is_done = 1
+      ''',
+        [sessionId],
+      );
+      todayNewCount = newWordsDoneResult.first['count'] as int? ?? 0;
+
+      // 待复习 = 队列中未完成的复习任务数量
+      final queueReviewResult = await db.rawQuery(
+        '''
+        SELECT COUNT(*) as count FROM study_session_queue
+        WHERE session_id = ? AND is_review = 1 AND is_done = 0
+      ''',
+        [sessionId],
+      );
+      reviewCount = queueReviewResult.first['count'] as int? ?? 0;
+    } else {
+      // 无今日会话：从 user_study_progress 表统计
+      // 今日新词 = 今日首次学习的单词数量
+      final todayStatsResult = await db.rawQuery(
+        '''
+        SELECT COUNT(*) as count
+        FROM user_study_progress
+        WHERE dict_name = ? AND DATE(last_modified) = ?
+      ''',
+        [dictName, today],
+      );
+      todayNewCount = (todayStatsResult.first['count'] as int?) ?? 0;
+
+      // 待复习 = user_study_progress 表中到期的复习词
+      final progressReviewResult = await db.rawQuery(
+        '''
+        SELECT COUNT(*) as count FROM user_study_progress
         WHERE dict_name = ? AND DATE(next_review_date) <= ? AND state = 1
-        
-        UNION
-        
-        -- 分部2：今日队列中未完成的复习任务，且该词在总表中尚未被点成“熟练”
-        SELECT ssq.word_id FROM study_session_queue ssq
-        JOIN study_session ss ON ssq.session_id = ss.id
-        LEFT JOIN user_study_progress usp ON ssq.word_id = usp.word_id AND ss.dict_name = usp.dict_name
-        WHERE ss.dict_name = ? AND ss.session_date = ? 
-          AND ssq.is_review = 1 AND ssq.is_done = 0
-          AND (usp.state IS NULL OR usp.state != 2)
-      )
-    ''',
-      [dictName, today, dictName, today],
-    );
-    final reviewCount = reviewQuery.first['count'] as int? ?? 0;
+      ''',
+        [dictName, today],
+      );
+      reviewCount = progressReviewResult.first['count'] as int? ?? 0;
+    }
 
     print(
-      'DEBUG: Dict: $dictName, Total: $totalCount, Learned: $learnedCount, TodayNew: $todayNewCount, TodayReview: $reviewCount',
+      'DEBUG getDictProgress: 词典=$dictName, 总词数=$totalCount, 已学=$learnedCount, 今日新词=$todayNewCount, 待复习=$reviewCount',
     );
 
     return DictProgress(
@@ -282,7 +281,7 @@ class DBHelper {
       learnedCount: learnedCount,
       todayNewCount: todayNewCount,
       todayReviewCount: reviewCount,
-      settings: settings.copyWith(dailyWords: dynamicDailyGoal), // 将动态分母传给 UI
+      settings: settings, // 使用原始设置，不做动态调整
       lastStudyTime: null,
     );
   }
@@ -300,32 +299,9 @@ class DBHelper {
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
-  /// 标记单词已学习
-  Future<void> markWordLearned(int wordId, String dictName) async {
-    final db = await database;
-    await db.insert('word_progress', {
-      'word_id': wordId,
-      'dict_name': dictName,
-      'is_learned': 1,
-      'learn_time': DateTime.now().toIso8601String(),
-    }, conflictAlgorithm: ConflictAlgorithm.replace);
-
-    // 更新总进度
-    await db.rawUpdate(
-      '''
-      UPDATE study_progress 
-      SET learned_count = (
-        SELECT COUNT(*) FROM word_progress 
-        WHERE dict_name = ? AND is_learned = 1
-      ),
-      last_study_time = ?
-      WHERE dict_name = ?
-    ''',
-      [dictName, DateTime.now().toIso8601String(), dictName],
-    );
-  }
-
   /// 获取今日待学习单词（返回单词文本和ID的映射）
+  /// 注意：此方法已废弃，建议使用 getTodayStudyQueue
+  @Deprecated('Use getTodayStudyQueue instead')
   Future<Map<String, int>> getTodayWordsWithIds(
     String dictName,
     StudySettings settings,
@@ -350,8 +326,8 @@ class DBHelper {
       SELECT w.id, w.word FROM words w
       JOIN word_dict_rel rel ON w.id = rel.word_id
       JOIN dictionaries d ON rel.dict_id = d.id
-      LEFT JOIN word_progress wp ON w.id = wp.word_id AND wp.dict_name = ?
-      WHERE d.name = ? AND (wp.is_learned IS NULL OR wp.is_learned = 0)
+      LEFT JOIN user_study_progress usp ON w.id = usp.word_id AND usp.dict_name = ?
+      WHERE d.name = ? AND usp.word_id IS NULL
       ORDER BY $orderBy
       LIMIT ?
     ''',
@@ -362,6 +338,8 @@ class DBHelper {
   }
 
   /// 获取今日待学习单词
+  /// 注意：此方法已废弃，建议使用 getTodayStudyQueue
+  @Deprecated('Use getTodayStudyQueue instead')
   Future<List<String>> getTodayWords(
     String dictName,
     StudySettings settings,
@@ -386,8 +364,8 @@ class DBHelper {
       SELECT w.word FROM words w
       JOIN word_dict_rel rel ON w.id = rel.word_id
       JOIN dictionaries d ON rel.dict_id = d.id
-      LEFT JOIN word_progress wp ON w.id = wp.word_id AND wp.dict_name = ?
-      WHERE d.name = ? AND (wp.is_learned IS NULL OR wp.is_learned = 0)
+      LEFT JOIN user_study_progress usp ON w.id = usp.word_id AND usp.dict_name = ?
+      WHERE d.name = ? AND usp.word_id IS NULL
       ORDER BY $orderBy
       LIMIT ?
     ''',
@@ -596,42 +574,6 @@ class DBHelper {
       progress.toMap(),
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
-
-    // 更新总进度统计
-    await _updateDictProgress(progress.dictName);
-  }
-
-  /// 更新词典总进度
-  Future<void> _updateDictProgress(String dictName) async {
-    final db = await database;
-
-    // 统计已掌握的单词数
-    final masteredCount = await db.rawQuery(
-      '''
-      SELECT COUNT(*) as count FROM user_study_progress
-      WHERE dict_name = ? AND state >= 1
-    ''',
-      [dictName],
-    );
-
-    final count = masteredCount.first['count'] as int;
-
-    await db.rawUpdate(
-      '''
-      UPDATE study_progress 
-      SET learned_count = ?,
-          last_study_time = ?
-      WHERE dict_name = ?
-    ''',
-      [count, DateTime.now().toIso8601String(), dictName],
-    );
-
-    // 如果不存在则插入
-    await db.insert('study_progress', {
-      'dict_name': dictName,
-      'learned_count': count,
-      'last_study_time': DateTime.now().toIso8601String(),
-    }, conflictAlgorithm: ConflictAlgorithm.ignore);
   }
 
   /// 获取单词的学习进度
@@ -707,10 +649,11 @@ class DBHelper {
       final queue = await _getSessionQueue(sessionId);
 
       print(
-        'DEBUG: Syncing dynamic tasks for session $sessionId. Current queue length: ${queue.length}',
+        'DEBUG getOrCreateTodaySession: 恢复会话 $sessionId, 当前队列长度: ${queue.length}',
       );
 
-      // A. 动态追加：寻找此时此刻【总进度表】里到期、但【今日队列】里没有的词
+      // A. 动态追加待复习单词：确保所有到期的复习词都在队列中
+      // 从 user_study_progress 表获取所有到期的复习词（state=1, next_review_date <= today）
       final currentDueWords = await getReviewWords(dictName, limit: 100);
       final wordIdsInQueue = queue.map((w) => w.wordId).toSet();
 
@@ -723,6 +666,7 @@ class DBHelper {
         nextIdx = (maxIdxResult.first['max_idx'] as int? ?? -1) + 1;
       }
 
+      int addedReviewCount = 0;
       for (var word in currentDueWords) {
         if (!wordIdsInQueue.contains(word.wordId)) {
           await db.insert('study_session_queue', {
@@ -733,11 +677,17 @@ class DBHelper {
             'is_done': 0,
           });
           queue.add(word);
+          addedReviewCount++;
         }
       }
 
-      // B. 动态补全新词：如果目标上调了，立刻从库里拉新词补足
+      if (addedReviewCount > 0) {
+        print('DEBUG: 动态追加了 $addedReviewCount 个待复习单词');
+      }
+
+      // B. 动态补全新词：如果每日目标调整，补充新词到目标数量
       final currentNewCount = queue.where((w) => !w.isReview).length;
+      int addedNewCount = 0;
       if (currentNewCount < settings.dailyWords) {
         int wordsToFill = settings.dailyWords - currentNewCount;
         for (int i = 0; i < wordsToFill; i++) {
@@ -752,10 +702,15 @@ class DBHelper {
             'is_done': 0,
           });
           queue.add(nextNew);
+          addedNewCount++;
+        }
+
+        if (addedNewCount > 0) {
+          print('DEBUG: 动态补充了 $addedNewCount 个新词');
         }
       }
 
-      // C. 重新校准索引：永远指向第一个 is_done = 0 的记录
+      // C. 重新校准当前索引：指向第一个未完成的单词
       final firstUndoneResult = await db.rawQuery(
         'SELECT MIN(queue_index) as idx FROM study_session_queue WHERE session_id = ? AND is_done = 0',
         [sessionId],
@@ -765,7 +720,7 @@ class DBHelper {
           firstUndoneResult.first['idx'] != null) {
         currentIndex = firstUndoneResult.first['idx'] as int;
       } else {
-        currentIndex = queue.length;
+        currentIndex = queue.length; // 所有单词都已完成
       }
 
       // 更新数据库中的索引
@@ -777,7 +732,7 @@ class DBHelper {
       );
 
       print(
-        'DEBUG: Session Refreshed. Queue: ${queue.length}, NextIndex: $currentIndex',
+        'DEBUG: 会话已刷新 - 队列总数: ${queue.length}, 当前索引: $currentIndex, 新词: ${queue.where((w) => !w.isReview).length}, 复习: ${queue.where((w) => w.isReview).length}',
       );
 
       return StudySession(
@@ -789,11 +744,13 @@ class DBHelper {
       );
     }
 
-    // 2. 创建新会话
+    // 2. 创建新会话：生成今日学习队列
     final queue = await getTodayStudyQueue(dictName, settings);
-    print('DEBUG: Creating new session. Queue size: ${queue.length}');
+    print(
+      'DEBUG: 创建新会话 - 队列大小: ${queue.length}, 新词: ${queue.where((w) => !w.isReview).length}, 复习: ${queue.where((w) => w.isReview).length}',
+    );
     if (queue.isEmpty) {
-      print('DEBUG: Queue is empty, no words to study.');
+      print('DEBUG: 队列为空，没有需要学习的单词');
       return null;
     }
 

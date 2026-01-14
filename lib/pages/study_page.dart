@@ -344,12 +344,12 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
   }
 
   Widget _buildTodayTaskCard(BuildContext context, Color primaryColor) {
-    // 今日新词进度：今日已学过的新词数量 / 每日目标
+    // 数据来源：widget.progress (DictProgress) - 由 getDictProgress 方法统一计算
+    // 数据同源策略：
+    // - 有今日会话时：从队列统计（新词=已完成的非复习词，待复习=未完成的复习任务）
+    // - 无今日会话时：从 user_study_progress 表统计
     final learnedNewToday = widget.progress.todayNewCount;
     final newWordsGoal = widget.progress.settings.dailyWords;
-
-    // 今日复习进度：由于 reviewWordsCount 在学习中会动态变化，
-    // 我们这里显示的是：当前数据库中还有多少个需要复习的（待复习）
     final remainingReview = widget.progress.todayReviewCount;
 
     return Container(
@@ -560,7 +560,6 @@ class StudySessionPage extends StatefulWidget {
 }
 
 class _StudySessionPageState extends State<StudySessionPage> {
-  late PageController _pageController;
   final AudioPlayer _audioPlayer = AudioPlayer();
   StudySession? _session;
   int _currentIndex = 0;
@@ -572,13 +571,11 @@ class _StudySessionPageState extends State<StudySessionPage> {
   int? _lastActionIndex; // 上一次操作的索引
   bool _canUndo = false; // 是否可以撤销
   bool _addedNewWordOnLastAction = false; // 上次操作是否补充了新词
-  bool _isAutoNavigating = false; // 是否正在自动导航（防止 onPageChanged 误触）
   bool _showFamiliarityButtons = false; // 是否显示熟悉度按钮（倒计时结束后显示）
 
   @override
   void initState() {
     super.initState();
-    _pageController = PageController();
     _loadOrResumeSession();
   }
 
@@ -601,17 +598,6 @@ class _StudySessionPageState extends State<StudySessionPage> {
         _currentIndex = safeIndex;
         _loading = false;
       });
-
-      // 如果已经完成了，不需要 jumpToPage
-      if (session != null && session.isCompleted) return;
-
-      if (session != null && safeIndex > 0 && session.queue.isNotEmpty) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_pageController.hasClients) {
-            _pageController.jumpToPage(safeIndex);
-          }
-        });
-      }
     }
   }
 
@@ -742,22 +728,17 @@ class _StudySessionPageState extends State<StudySessionPage> {
     // 4. 更新会话进度
     await db.updateSessionProgress(_session!.id, targetIndex);
 
-    ScaffoldMessenger.of(context).hideCurrentSnackBar();
-
-    // 清除撤销状态
-    _canUndo = false;
-    _lastAction = null;
-    _lastActionIndex = null;
-    _addedNewWordOnLastAction = false;
-
-    // 重建 PageController 回到被撤销的单词
-    _pageController.dispose();
-    _pageController = PageController(initialPage: targetIndex);
-
     setState(() {
       _currentIndex = targetIndex;
       _rebuildKey++; // 强制重建页面，重新开始倒计时
+      _showFamiliarityButtons = false;
+      _canUndo = false;
+      _lastAction = null;
+      _lastActionIndex = null;
+      _addedNewWordOnLastAction = false;
     });
+
+    _saveProgress();
 
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
@@ -774,18 +755,11 @@ class _StudySessionPageState extends State<StudySessionPage> {
     if (_session == null) return;
 
     if (_currentIndex < _session!.queue.length - 1) {
-      _isAutoNavigating = true;
-      _pageController
-          .nextPage(
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeInOut,
-          )
-          .then((_) {
-            // 动画结束后重置标志
-            if (mounted) {
-              _isAutoNavigating = false;
-            }
-          });
+      setState(() {
+        _currentIndex++;
+        _showFamiliarityButtons = false;
+      });
+      _saveProgress();
     } else {
       _completeSession();
     }
@@ -802,7 +776,6 @@ class _StudySessionPageState extends State<StudySessionPage> {
   @override
   void dispose() {
     _audioPlayer.dispose();
-    _pageController.dispose();
     super.dispose();
   }
 
@@ -859,40 +832,27 @@ class _StudySessionPageState extends State<StudySessionPage> {
             _buildHeader(context),
             if (currentWord.isReview) _buildReviewBanner(context),
             Expanded(
-              child: PageView.builder(
-                key: ValueKey(_rebuildKey), // 强制重建整个 PageView
-                controller: _pageController,
-                physics:
-                    const NeverScrollableScrollPhysics(), // 禁止手动滑动，防止倒计时被绕过
-                onPageChanged: (i) {
-                  setState(() {
-                    _currentIndex = i;
-                    _showFamiliarityButtons = false; // 切换页面时隐藏按钮
-                    // 只有非自动导航（用户手动滑动）时才重置撤销状态
-                    if (!_isAutoNavigating) {
-                      _canUndo = false;
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 300),
+                transitionBuilder: (Widget child, Animation<double> animation) {
+                  return FadeTransition(opacity: animation, child: child);
+                },
+                child: _WordCardPage(
+                  key: ValueKey(
+                    '${currentWord.wordId}_${_currentIndex}_$_rebuildKey',
+                  ),
+                  isActive: true,
+                  wordText: currentWord.word,
+                  isReview: currentWord.isReview,
+                  onPlayAudio: _playAudio,
+                  primaryColor: Theme.of(context).colorScheme.primary,
+                  onMasteredInCountdown: (_) => _handleMasteredInCountdown(),
+                  onShowDetails: () {
+                    if (mounted) {
+                      setState(() => _showFamiliarityButtons = true);
                     }
-                  });
-                  _saveProgress();
-                },
-                itemCount: queue.length,
-                itemBuilder: (context, index) {
-                  final wordProgress = queue[index];
-                  return _WordCardPage(
-                    key: ValueKey('${wordProgress.wordId}_$index'),
-                    isActive: index == _currentIndex,
-                    wordText: wordProgress.word,
-                    isReview: wordProgress.isReview,
-                    onPlayAudio: _playAudio,
-                    primaryColor: Theme.of(context).colorScheme.primary,
-                    onMasteredInCountdown: (_) => _handleMasteredInCountdown(),
-                    onShowDetails: () {
-                      if (mounted) {
-                        setState(() => _showFamiliarityButtons = true);
-                      }
-                    },
-                  );
-                },
+                  },
+                ),
               ),
             ),
             if (_showFamiliarityButtons) _buildFamiliarityButtons(context),
@@ -935,11 +895,29 @@ class _StudySessionPageState extends State<StudySessionPage> {
 
   Widget _buildHeader(BuildContext context) {
     final session = _session;
-    // 获取队列中的统计
-    // 注意：这里的 new/review 是整个 Session 的总规划
-    final newWordsCount = session?.newWordsCount ?? 0;
-    final reviewWordsCount = session?.reviewWordsCount ?? 0;
-    final totalCount = session?.queue.length ?? 0;
+    final queue = session?.queue ?? [];
+
+    // 计算已完成和剩余的统计
+    // 已完成的新词：当前索引之前的非复习词数量
+    int doneNewWords = 0;
+    int remainingReviewWords = 0;
+
+    for (int i = 0; i < queue.length; i++) {
+      if (i < _currentIndex) {
+        // 已完成的词
+        if (!queue[i].isReview) {
+          doneNewWords++;
+        }
+      } else {
+        // 未完成的词（从当前索引开始）
+        if (queue[i].isReview) {
+          remainingReviewWords++;
+        }
+      }
+    }
+
+    final totalCount = queue.length;
+    final dailyGoal = widget.settings.dailyWords;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -960,7 +938,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Text(
-                      '新词 $newWordsCount',
+                      '新词 $doneNewWords/$dailyGoal',
                       style: TextStyle(
                         fontSize: 11,
                         color: Theme.of(context).colorScheme.primary,
@@ -969,7 +947,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      '复习 $reviewWordsCount',
+                      '待复习 $remainingReviewWords',
                       style: TextStyle(
                         fontSize: 11,
                         color: Colors.orange[600],
@@ -1058,6 +1036,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
 
     final queue = _session!.queue;
     final currentWordProgress = queue[_currentIndex];
+    final isNewWord = currentWordProgress.state == WordState.newWord;
 
     // 保存原始状态用于撤销
     _lastAction = WordProgress(
@@ -1093,7 +1072,8 @@ class _StudySessionPageState extends State<StudySessionPage> {
     await db.updateWordProgress(progress);
     await db.markSessionWordDone(_session!.id, _currentIndex);
 
-    // 如果点击"没记住"，将单词加入队列末尾
+    // 关键逻辑：点击"不认识"时，立即将单词加入队列末尾作为复习
+    bool addedToQueue = false;
     if (level == FamiliarityLevel.unfamiliar) {
       final repeatWord = WordProgress(
         wordId: currentWordProgress.wordId,
@@ -1105,16 +1085,24 @@ class _StudySessionPageState extends State<StudySessionPage> {
         nextReviewDate: progress.nextReviewDate,
         state: progress.state,
         lastModified: progress.lastModified,
-        isReview: true, // 标记为复习
+        isReview: true, // 标记为复习单词
       );
       setState(() {
         _session!.queue.add(repeatWord);
       });
       // 添加到数据库队列
       await db.addWordToSessionQueue(_session!.id, repeatWord.wordId);
+      addedToQueue = true;
+
+      print(
+        'DEBUG: 单词 "${currentWordProgress.word}" 点击不认识，已加入队列末尾 (isNewWord: $isNewWord)',
+      );
     }
 
-    setState(() => _canUndo = true);
+    setState(() {
+      _canUndo = true;
+      _addedNewWordOnLastAction = addedToQueue;
+    });
 
     _goToNextWord();
   }
@@ -1259,23 +1247,43 @@ class _WordCardPageState extends State<_WordCardPage>
   void didUpdateWidget(_WordCardPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.isActive && !oldWidget.isActive) {
+      // 页面从不活跃变为活跃
+      print(
+        'DEBUG _WordCardPage: 页面激活 - word=${widget.wordText}, _word=${_word?.word}, _showDetails=$_showDetails',
+      );
       if (_word != null) {
         widget.onPlayAudio(_word?.ttsPath, word: _word?.word);
-        if (!_showDetails && (_timer == null || !_timer!.isActive)) {
+        // 如果还没有显示详情，且倒计时未启动，则启动倒计时
+        if (!_showDetails) {
+          print('DEBUG _WordCardPage: 启动倒计时 - word=${widget.wordText}');
           _startCountdown();
         }
+      } else {
+        print(
+          'DEBUG _WordCardPage: 单词尚未加载，等待 _loadWord 完成 - word=${widget.wordText}',
+        );
       }
     } else if (!widget.isActive && oldWidget.isActive) {
+      // 页面从活跃变为不活跃
+      print('DEBUG _WordCardPage: 页面失活 - word=${widget.wordText}');
       _timer?.cancel();
       _animationController.stop();
     }
   }
 
   Future<void> _loadWord() async {
+    print(
+      'DEBUG _WordCardPage: 开始加载单词 - word=${widget.wordText}, isActive=${widget.isActive}',
+    );
     final word = await DBHelper().getWordDetail(widget.wordText);
     if (mounted) {
       setState(() => _word = word);
-      if (widget.isActive) {
+      print(
+        'DEBUG _WordCardPage: 单词加载完成 - word=${widget.wordText}, isActive=${widget.isActive}, _showDetails=$_showDetails',
+      );
+      // 单词加载完成后，如果页面是活跃的且还没显示详情，启动倒计时
+      if (widget.isActive && !_showDetails) {
+        print('DEBUG _WordCardPage: 单词加载后启动倒计时 - word=${widget.wordText}');
         widget.onPlayAudio(word?.ttsPath, word: word?.word);
         _startCountdown();
       }
@@ -1283,14 +1291,26 @@ class _WordCardPageState extends State<_WordCardPage>
   }
 
   void _startCountdown() {
-    if (_animationController.isDismissed) {
-      _animationController.forward();
-    }
+    print('DEBUG _WordCardPage: _startCountdown 被调用 - word=${widget.wordText}');
+    // 确保先取消之前可能存在的计时器
+    _timer?.cancel();
+
+    // 重置状态并更新 UI
+    setState(() {
+      _countdown = _totalSeconds;
+      _showDetails = false;
+    });
+
+    // 重置并启动动画控制器
+    _animationController.reset();
+    _animationController.forward();
+
     _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_countdown > 1) {
         setState(() => _countdown--);
       } else {
         timer.cancel();
+        print('DEBUG _WordCardPage: 倒计时结束，显示详情 - word=${widget.wordText}');
         setState(() => _showDetails = true);
         widget.onShowDetails?.call();
       }
