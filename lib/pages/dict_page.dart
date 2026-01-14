@@ -158,7 +158,6 @@ class _DictPageState extends State<DictPage> {
 
     return GestureDetector(
       onTap: () {
-        _selectDict(name);
         _showSettingsSheet(name, progress);
       },
       child: AnimatedContainer(
@@ -336,6 +335,7 @@ class _DictPageState extends State<DictPage> {
         currentSettings: progress?.settings ?? const StudySettings(),
         onConfirm: (settings) async {
           await DBHelper().saveStudySettings(dictName, settings);
+          await _selectDict(dictName); // 点击确认按钮才切换词典
           _loadData();
         },
       ),
@@ -384,7 +384,7 @@ class _StudySettingsSheetState extends State<StudySettingsSheet> {
       ),
       child: SafeArea(
         child: Padding(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -399,124 +399,80 @@ class _StudySettingsSheetState extends State<StudySettingsSheet> {
                   ),
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
               Row(
                 children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: primaryColor.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: Icon(
-                      Icons.settings_rounded,
-                      color: primaryColor,
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '学习设置',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: context.textPrimary,
-                          ),
-                        ),
-                        Text(
-                          widget.dictName,
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: context.textSecondary,
-                          ),
-                        ),
-                      ],
+                  Icon(Icons.settings_rounded, color: primaryColor, size: 20),
+                  const SizedBox(width: 8),
+                  Text(
+                    '学习设置 · ${widget.dictName}',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: context.textPrimary,
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 28),
-              Text(
-                '每日学习量',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: context.textSecondary,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: context.backgroundColor,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: Row(
-                  children: [
-                    Text(
-                      '$_dailyWords',
+              const SizedBox(height: 20),
+              // 每日学习量
+              Row(
+                children: [
+                  Text(
+                    '每日学习',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: context.textSecondary,
+                    ),
+                  ),
+                  const Spacer(),
+                  _buildStepButton(Icons.remove, () {
+                    if (_dailyWords > 10) setState(() => _dailyWords -= 5);
+                  }),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    child: Text(
+                      '$_dailyWords 词',
                       style: TextStyle(
-                        fontSize: 36,
+                        fontSize: 18,
                         fontWeight: FontWeight.bold,
                         color: primaryColor,
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '词/天',
-                      style: TextStyle(
-                        fontSize: 14,
-                        color: context.textSecondary,
-                      ),
-                    ),
-                    const Spacer(),
-                    _buildStepButton(Icons.remove, () {
-                      if (_dailyWords > 10) setState(() => _dailyWords -= 5);
-                    }),
-                    const SizedBox(width: 8),
-                    _buildStepButton(Icons.add, () {
-                      if (_dailyWords < 50) setState(() => _dailyWords += 5);
-                    }),
-                  ],
-                ),
+                  ),
+                  _buildStepButton(Icons.add, () {
+                    if (_dailyWords < 50) setState(() => _dailyWords += 5);
+                  }),
+                ],
               ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
+              // 学习模式 - 横向排列
               Text(
                 '学习模式',
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: context.textSecondary,
-                ),
+                style: TextStyle(fontSize: 14, color: context.textSecondary),
               ),
-              const SizedBox(height: 12),
-              _buildModeOption(
-                StudyMode.sequential,
-                '顺序学习',
-                Icons.format_list_numbered_rounded,
-                '按词典顺序依次学习',
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _buildModeChip(
+                    StudyMode.sequential,
+                    '顺序',
+                    Icons.format_list_numbered_rounded,
+                  ),
+                  const SizedBox(width: 8),
+                  _buildModeChip(
+                    StudyMode.byDifficulty,
+                    '难度',
+                    Icons.trending_up_rounded,
+                  ),
+                  const SizedBox(width: 8),
+                  _buildModeChip(StudyMode.random, '随机', Icons.shuffle_rounded),
+                ],
               ),
-              _buildModeOption(
-                StudyMode.byDifficulty,
-                '难度优先',
-                Icons.trending_up_rounded,
-                '先学简单词汇再学难词',
-              ),
-              _buildModeOption(
-                StudyMode.random,
-                '随机模式',
-                Icons.shuffle_rounded,
-                '随机抽取词汇学习',
-              ),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               SizedBox(
                 width: double.infinity,
-                height: 52,
+                height: 48,
                 child: ElevatedButton(
                   onPressed: () {
                     widget.onConfirm(
@@ -529,12 +485,12 @@ class _StudySettingsSheetState extends State<StudySettingsSheet> {
                     foregroundColor: Colors.white,
                     elevation: 0,
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(12),
                     ),
                   ),
                   child: const Text(
-                    '开始学习',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    '选择词典',
+                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
                   ),
                 ),
               ),
@@ -549,86 +505,56 @@ class _StudySettingsSheetState extends State<StudySettingsSheet> {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        width: 36,
-        height: 36,
+        width: 32,
+        height: 32,
         decoration: BoxDecoration(
-          color: context.surfaceColor,
-          borderRadius: BorderRadius.circular(10),
+          color: context.backgroundColor,
+          borderRadius: BorderRadius.circular(8),
           border: Border.all(color: context.dividerColor),
         ),
-        child: Icon(icon, size: 20, color: context.textSecondary),
+        child: Icon(icon, size: 18, color: context.textSecondary),
       ),
     );
   }
 
-  Widget _buildModeOption(
-    StudyMode mode,
-    String label,
-    IconData icon,
-    String description,
-  ) {
+  Widget _buildModeChip(StudyMode mode, String label, IconData icon) {
     final isSelected = _mode == mode;
     final primaryColor = Theme.of(context).colorScheme.primary;
 
-    return GestureDetector(
-      onTap: () => setState(() => _mode = mode),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        margin: const EdgeInsets.only(bottom: 8),
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? primaryColor.withValues(alpha: 0.06)
-              : context.backgroundColor,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: isSelected ? primaryColor : Colors.transparent,
-            width: 1.5,
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => _mode = mode),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: isSelected
+                ? primaryColor.withValues(alpha: 0.1)
+                : context.backgroundColor,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isSelected ? primaryColor : context.dividerColor,
+              width: 1.5,
+            ),
           ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 38,
-              height: 38,
-              decoration: BoxDecoration(
-                color: isSelected
-                    ? primaryColor.withValues(alpha: 0.1)
-                    : context.dividerColor,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Icon(
+          child: Column(
+            children: [
+              Icon(
                 icon,
                 size: 20,
                 color: isSelected ? primaryColor : context.textSecondary,
               ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: isSelected ? primaryColor : context.textPrimary,
-                    ),
-                  ),
-                  Text(
-                    description,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: context.textSecondary,
-                    ),
-                  ),
-                ],
+              const SizedBox(height: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                  color: isSelected ? primaryColor : context.textSecondary,
+                ),
               ),
-            ),
-            if (isSelected)
-              Icon(Icons.check_circle_rounded, color: primaryColor, size: 22),
-          ],
+            ],
+          ),
         ),
       ),
     );

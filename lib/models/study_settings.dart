@@ -12,6 +12,13 @@ class StudySettings {
 
   const StudySettings({this.dailyWords = 20, this.mode = StudyMode.sequential});
 
+  StudySettings copyWith({int? dailyWords, StudyMode? mode}) {
+    return StudySettings(
+      dailyWords: dailyWords ?? this.dailyWords,
+      mode: mode ?? this.mode,
+    );
+  }
+
   Map<String, dynamic> toJson() => {
     'dailyWords': dailyWords,
     'mode': mode.index,

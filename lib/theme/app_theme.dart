@@ -56,7 +56,7 @@ class AppTheme {
       brightness: Brightness.dark,
     ),
     scaffoldBackgroundColor: darkBackground,
-    fontFamily: 'NotoSansSC',
+    fontFamily: 'Inter',
     fontFamilyFallback: const ['Inter'],
     textTheme: const TextTheme(
       bodyLarge: TextStyle(fontWeight: FontWeight.w600),

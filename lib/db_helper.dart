@@ -78,6 +78,7 @@ class DBHelper {
         dict_name TEXT NOT NULL,
         ease_factor REAL DEFAULT 2.5,
         interval INTEGER DEFAULT 0,
+        repetition INTEGER DEFAULT 0,
         next_review_date TEXT,
         state INTEGER DEFAULT 0,
         last_modified TEXT,
@@ -207,56 +208,82 @@ class DBHelper {
     );
     final learnedCount = learnedResult.first['count'] as int? ?? 0;
 
-    // 获取今日学习统计
+    // 获取今日进度日期标志
     final today = DateTime.now().toIso8601String().substring(0, 10);
-    final todayNewResult = await db.rawQuery(
-      '''
-      SELECT COUNT(*) as count FROM user_study_progress
-      WHERE dict_name = ? AND DATE(last_modified) = ? AND state = 1
-    ''',
-      [dictName, today],
-    );
-    final todayNewCount = todayNewResult.first['count'] as int? ?? 0;
 
-    // 获取今日待复习数量
-    final reviewResult = await db.rawQuery(
-      '''
-      SELECT COUNT(*) as count FROM user_study_progress
-      WHERE dict_name = ? AND next_review_date <= ? AND state > 0
-    ''',
-      [dictName, today],
-    );
-    final reviewCount = reviewResult.first['count'] as int? ?? 0;
-
-    // 获取学习设置
+    // 1. 先获取学习设置（为了后续计算动态分母）
     final progressResult = await db.query(
       'study_progress',
       where: 'dict_name = ?',
       whereArgs: [dictName],
     );
-
     StudySettings settings = const StudySettings();
-    DateTime? lastStudyTime;
-
     if (progressResult.isNotEmpty) {
       final row = progressResult.first;
       settings = StudySettings(
         dailyWords: row['daily_words'] as int? ?? 20,
         mode: StudyMode.values[row['study_mode'] as int? ?? 0],
       );
-      lastStudyTime = row['last_study_time'] != null
-          ? DateTime.parse(row['last_study_time'] as String)
-          : null;
     }
+
+    // 2. 获取今日新词统计
+    final todayStatsResult = await db.rawQuery(
+      '''
+      SELECT
+        SUM(CASE WHEN state = 1 THEN 1 ELSE 0 END) as learning_count,
+        SUM(CASE WHEN state = 2 THEN 1 ELSE 0 END) as mastered_count
+      FROM user_study_progress
+      WHERE dict_name = ? AND DATE(last_modified) = ?
+    ''',
+      [dictName, today],
+    );
+
+    final int todayLearning =
+        (todayStatsResult.first['learning_count'] as int?) ?? 0;
+    final int todayMastered =
+        (todayStatsResult.first['mastered_count'] as int?) ?? 0;
+
+    // 分子：包含学习中和已掌握的所有新词
+    final todayNewCount = todayLearning + todayMastered;
+    // 动态分母：设定目标 + 今日已秒杀(mastered)的量
+    final int dynamicDailyGoal = settings.dailyWords + todayMastered;
+
+    // 3. 获取待复习数量
+    // 强制排除已掌握(state=2)的词，防止因状态同步延迟导致的异常计数
+    final reviewQuery = await db.rawQuery(
+      '''
+      SELECT COUNT(DISTINCT word_id) as count FROM (
+        -- 分部1：数据库进度表中到期且非熟练的词
+        SELECT word_id FROM user_study_progress
+        WHERE dict_name = ? AND DATE(next_review_date) <= ? AND state = 1
+        
+        UNION
+        
+        -- 分部2：今日队列中未完成的复习任务，且该词在总表中尚未被点成“熟练”
+        SELECT ssq.word_id FROM study_session_queue ssq
+        JOIN study_session ss ON ssq.session_id = ss.id
+        LEFT JOIN user_study_progress usp ON ssq.word_id = usp.word_id AND ss.dict_name = usp.dict_name
+        WHERE ss.dict_name = ? AND ss.session_date = ? 
+          AND ssq.is_review = 1 AND ssq.is_done = 0
+          AND (usp.state IS NULL OR usp.state != 2)
+      )
+    ''',
+      [dictName, today, dictName, today],
+    );
+    final reviewCount = reviewQuery.first['count'] as int? ?? 0;
+
+    print(
+      'DEBUG: Dict: $dictName, Total: $totalCount, Learned: $learnedCount, TodayNew: $todayNewCount, TodayReview: $reviewCount',
+    );
 
     return DictProgress(
       dictName: dictName,
-      learnedCount: learnedCount,
       totalCount: totalCount,
-      settings: settings,
-      lastStudyTime: lastStudyTime,
+      learnedCount: learnedCount,
       todayNewCount: todayNewCount,
       todayReviewCount: reviewCount,
+      settings: settings.copyWith(dailyWords: dynamicDailyGoal), // 将动态分母传给 UI
+      lastStudyTime: null,
     );
   }
 
@@ -420,7 +447,7 @@ class DBHelper {
       FROM user_study_progress usp
       JOIN words w ON usp.word_id = w.id
       WHERE usp.dict_name = ? 
-        AND usp.next_review_date <= ?
+        AND DATE(usp.next_review_date) <= ?
         AND usp.state > 0
       ORDER BY usp.next_review_date ASC
       LIMIT ?
@@ -440,13 +467,13 @@ class DBHelper {
   ) async {
     final db = await database;
 
-    // 1. 获取需要复习的单词
+    // 1. 获取需要复习的单词 (获取所有到期的，甚至更多)
     final reviewWords = await getReviewWords(
       dictName,
-      limit: settings.dailyWords ~/ 2,
+      limit: 1000, // 设定一个足够大的上限，确保包含所有复习词
     );
 
-    // 2. 获取新单词
+    // 2. 获取新单词 (固定数量，由设置决定)
     String orderBy;
     switch (settings.mode) {
       case StudyMode.sequential:
@@ -460,7 +487,7 @@ class DBHelper {
         break;
     }
 
-    final newWordsLimit = settings.dailyWords - reviewWords.length;
+    final newWordsLimit = settings.dailyWords; // 每日新词目标
     final newWordResults = await db.rawQuery(
       '''
       SELECT w.id as word_id, w.word, ? as dict_name
@@ -479,25 +506,86 @@ class DBHelper {
         .map((row) => WordProgress.fromMap(row))
         .toList();
 
-    // 3. 穿插合并：每学3个新词插入1个复习词
+    // 3. 穿插合并：策略是优先保证新词展示，同时穿插复习
+    // 比如：每 2 个新词穿插 1 个复习词，或者如果复习词很多，就均匀分布
     final List<WordProgress> queue = [];
     int newIndex = 0;
     int reviewIndex = 0;
-    int newCount = 0;
+
+    // 简单的穿插逻辑：只要还有词就处理
+    while (newIndex < newWords.length || reviewIndex < reviewWords.length) {
+      // 这里的策略可以调整，目前保留 每3个新词后插入1个复习词 的节奏，
+      // 但如果新词没了，就全是复习词；复习词没了，就全是新词。
+      // 为了让复习更及时出现，改为 2:1 或者 1:1 可能更好？
+      // 鉴于用户反馈需要明确的进度，我们保持一定的穿插。
+
+      // 如果还有新词
+      if (newIndex < newWords.length) {
+        queue.add(newWords[newIndex++]);
+        // 连续加最多2个新词后，尝试加一个复习词
+        if (newIndex < newWords.length && newIndex % 2 == 0) {
+          if (reviewIndex < reviewWords.length) {
+            queue.add(reviewWords[reviewIndex++]);
+          }
+        }
+      } else {
+        // 新词学完了，把剩下的复习词都加上
+        if (reviewIndex < reviewWords.length) {
+          queue.add(reviewWords[reviewIndex++]);
+        }
+      }
+
+      // 还没处理完新词，且复习词堆积比较多时，强制穿插
+      if (newIndex < newWords.length && reviewIndex < reviewWords.length) {
+        // 如果复习词数量远大于新词，增加复习词出现频率
+        // 简单起见，这里保证至少这一轮循环末尾会检查是否加复习词
+        // 上面的逻辑已经涵盖了基本的穿插
+      }
+    }
+
+    // 考虑到上述循环逻辑有点复杂，简化为标准 2(New):1(Review) 穿插，直到一方耗尽
+    queue.clear();
+    newIndex = 0;
+    reviewIndex = 0;
 
     while (newIndex < newWords.length || reviewIndex < reviewWords.length) {
-      // 每3个新词后插入1个复习词
-      if (newIndex < newWords.length &&
-          (newCount < 3 || reviewIndex >= reviewWords.length)) {
+      // 添加最多2个新词
+      int addedNew = 0;
+      while (newIndex < newWords.length && addedNew < 2) {
         queue.add(newWords[newIndex++]);
-        newCount++;
-      } else if (reviewIndex < reviewWords.length) {
+        addedNew++;
+      }
+
+      // 添加1个复习词
+      if (reviewIndex < reviewWords.length) {
         queue.add(reviewWords[reviewIndex++]);
-        newCount = 0;
+      }
+
+      // 如果新词没了，剩下复习词全部加上
+      if (newIndex >= newWords.length) {
+        while (reviewIndex < reviewWords.length) {
+          queue.add(reviewWords[reviewIndex++]);
+        }
+      }
+      // 如果复习词没了，剩下新词全部加上
+      else if (reviewIndex >= reviewWords.length) {
+        while (newIndex < newWords.length) {
+          queue.add(newWords[newIndex++]);
+        }
       }
     }
 
     return queue;
+  }
+
+  /// [Debug] 强制将所有学习中/已掌握单词的复习时间提前1天
+  Future<void> debugReduceReviewDate() async {
+    final db = await database;
+    await db.rawUpdate('''
+      UPDATE user_study_progress 
+      SET next_review_date = datetime(next_review_date, '-1 day')
+      WHERE state > 0
+    ''');
   }
 
   /// 更新单词学习进度 (SM-2 算法)
@@ -573,24 +661,29 @@ class DBHelper {
     final db = await database;
     final today = DateTime.now().toIso8601String().substring(0, 10);
 
-    // 检查今日是否有会话
+    // 1. 获取当前进度统计（这是最可靠的数据源）
+    final progress = await getDictProgress(dictName);
+
+    // 判断是否还有任务：有到期复习 OR 今日新词未达标（且词典还有词）
+    final hasWork =
+        progress.todayReviewCount > 0 ||
+        (progress.todayNewCount < progress.settings.dailyWords &&
+            progress.learnedCount < progress.totalCount);
+
+    if (!hasWork) {
+      return TodaySessionStatus.completed;
+    }
+
+    // 2. 检查今日是否已开启过会话
     final sessions = await db.query(
       'study_session',
       where: 'dict_name = ? AND session_date = ?',
       whereArgs: [dictName, today],
     );
 
-    if (sessions.isEmpty) {
-      return TodaySessionStatus.noSession;
-    }
-
-    // 检查是否已完成
-    final completedSession = sessions.where((s) => s['is_completed'] == 1);
-    if (completedSession.isNotEmpty) {
-      return TodaySessionStatus.completed;
-    }
-
-    return TodaySessionStatus.inProgress;
+    return sessions.isEmpty
+        ? TodaySessionStatus.noSession
+        : TodaySessionStatus.inProgress;
   }
 
   /// 获取或创建今日学习会话
@@ -601,33 +694,108 @@ class DBHelper {
     final db = await database;
     final today = DateTime.now().toIso8601String().substring(0, 10);
 
-    // 1. 检查是否有今日未完成的会话
+    // 1. 检查今日会话（无论是否完成）
     final existingSession = await db.query(
       'study_session',
-      where: 'dict_name = ? AND session_date = ? AND is_completed = 0',
+      where: 'dict_name = ? AND session_date = ?',
       whereArgs: [dictName, today],
     );
 
     if (existingSession.isNotEmpty) {
-      // 恢复已有会话
       final sessionId = existingSession.first['id'] as int;
-      final currentIndex = existingSession.first['current_index'] as int;
+      int currentIndex = existingSession.first['current_index'] as int;
       final queue = await _getSessionQueue(sessionId);
 
+      print(
+        'DEBUG: Syncing dynamic tasks for session $sessionId. Current queue length: ${queue.length}',
+      );
+
+      // A. 动态追加：寻找此时此刻【总进度表】里到期、但【今日队列】里没有的词
+      final currentDueWords = await getReviewWords(dictName, limit: 100);
+      final wordIdsInQueue = queue.map((w) => w.wordId).toSet();
+
+      int nextIdx = 0;
       if (queue.isNotEmpty) {
-        return StudySession(
-          id: sessionId,
-          dictName: dictName,
-          sessionDate: today,
-          currentIndex: currentIndex,
-          queue: queue,
+        final maxIdxResult = await db.rawQuery(
+          'SELECT MAX(queue_index) as max_idx FROM study_session_queue WHERE session_id = ?',
+          [sessionId],
         );
+        nextIdx = (maxIdxResult.first['max_idx'] as int? ?? -1) + 1;
       }
+
+      for (var word in currentDueWords) {
+        if (!wordIdsInQueue.contains(word.wordId)) {
+          await db.insert('study_session_queue', {
+            'session_id': sessionId,
+            'word_id': word.wordId,
+            'queue_index': nextIdx++,
+            'is_review': 1,
+            'is_done': 0,
+          });
+          queue.add(word);
+        }
+      }
+
+      // B. 动态补全新词：如果目标上调了，立刻从库里拉新词补足
+      final currentNewCount = queue.where((w) => !w.isReview).length;
+      if (currentNewCount < settings.dailyWords) {
+        int wordsToFill = settings.dailyWords - currentNewCount;
+        for (int i = 0; i < wordsToFill; i++) {
+          final nextNew = await getNextNewWord(dictName, settings, queue);
+          if (nextNew == null) break;
+
+          await db.insert('study_session_queue', {
+            'session_id': sessionId,
+            'word_id': nextNew.wordId,
+            'queue_index': nextIdx++,
+            'is_review': 0,
+            'is_done': 0,
+          });
+          queue.add(nextNew);
+        }
+      }
+
+      // C. 重新校准索引：永远指向第一个 is_done = 0 的记录
+      final firstUndoneResult = await db.rawQuery(
+        'SELECT MIN(queue_index) as idx FROM study_session_queue WHERE session_id = ? AND is_done = 0',
+        [sessionId],
+      );
+
+      if (firstUndoneResult.isNotEmpty &&
+          firstUndoneResult.first['idx'] != null) {
+        currentIndex = firstUndoneResult.first['idx'] as int;
+      } else {
+        currentIndex = queue.length;
+      }
+
+      // 更新数据库中的索引
+      await db.update(
+        'study_session',
+        {'current_index': currentIndex},
+        where: 'id = ?',
+        whereArgs: [sessionId],
+      );
+
+      print(
+        'DEBUG: Session Refreshed. Queue: ${queue.length}, NextIndex: $currentIndex',
+      );
+
+      return StudySession(
+        id: sessionId,
+        dictName: dictName,
+        sessionDate: today,
+        currentIndex: currentIndex,
+        queue: queue,
+      );
     }
 
     // 2. 创建新会话
     final queue = await getTodayStudyQueue(dictName, settings);
-    if (queue.isEmpty) return null;
+    print('DEBUG: Creating new session. Queue size: ${queue.length}');
+    if (queue.isEmpty) {
+      print('DEBUG: Queue is empty, no words to study.');
+      return null;
+    }
 
     // 插入会话记录
     final sessionId = await db.insert('study_session', {
@@ -663,7 +831,7 @@ class DBHelper {
     final db = await database;
     final results = await db.rawQuery(
       '''
-      SELECT ssq.*, w.word, usp.ease_factor, usp.interval, 
+      SELECT ssq.*, w.word, usp.ease_factor, usp.interval, usp.repetition,
              usp.next_review_date, usp.state, usp.last_modified,
              ssq.is_review as is_review_flag
       FROM study_session_queue ssq
@@ -683,6 +851,7 @@ class DBHelper {
         dictName: '', // 会从 session 获取
         easeFactor: (row['ease_factor'] as num?)?.toDouble() ?? 2.5,
         interval: row['interval'] as int? ?? 0,
+        repetition: row['repetition'] as int? ?? 0,
         nextReviewDate: row['next_review_date'] != null
             ? DateTime.parse(row['next_review_date'] as String)
             : null,
@@ -720,9 +889,16 @@ class DBHelper {
   /// 完成会话
   Future<void> completeSession(int sessionId) async {
     final db = await database;
+    // 获取队列长度作为最终索引
+    final countResult = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM study_session_queue WHERE session_id = ?',
+      [sessionId],
+    );
+    final total = countResult.first['count'] as int? ?? 0;
+
     await db.update(
       'study_session',
-      {'is_completed': 1},
+      {'current_index': total},
       where: 'id = ?',
       whereArgs: [sessionId],
     );
@@ -770,19 +946,27 @@ class DBHelper {
   }
 
   /// 添加单词到会话队列（用于"没记住"时加入队列末尾）
-  Future<void> addWordToSessionQueue(
-    int sessionId,
-    int wordId,
-    int queueIndex,
-  ) async {
+  Future<void> addWordToSessionQueue(int sessionId, int wordId) async {
     final db = await database;
+
+    // 动态获取当前最高索引
+    final maxResult = await db.rawQuery(
+      'SELECT MAX(queue_index) as max_idx FROM study_session_queue WHERE session_id = ?',
+      [sessionId],
+    );
+    final nextIndex = (maxResult.first['max_idx'] as int? ?? -1) + 1;
+
     await db.insert('study_session_queue', {
       'session_id': sessionId,
       'word_id': wordId,
-      'queue_index': queueIndex,
+      'queue_index': nextIndex,
       'is_review': 1,
       'is_done': 0,
     });
+
+    print(
+      'DEBUG: Dynamic Append: WordId $wordId added to queue at index $nextIndex',
+    );
   }
 
   /// 获取下一个新词（用于补充队列）

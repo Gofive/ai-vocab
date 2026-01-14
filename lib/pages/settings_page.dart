@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
+import 'package:ai_vocab/db_helper.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -146,6 +147,22 @@ class SettingsPage extends StatelessWidget {
             title: '关于',
             subtitle: 'v1.0.0',
             onTap: () {},
+          ),
+          _buildDivider(context),
+          _buildSettingItem(
+            context,
+            icon: Icons.bug_report,
+            title: 'Debug: 复习时间-1天',
+            subtitle: '用于测试复习模块',
+            trailing: const Icon(Icons.touch_app, color: Colors.red),
+            onTap: () async {
+              await DBHelper().debugReduceReviewDate();
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('已将所有在学单词复习时间提前1天')),
+                );
+              }
+            },
           ),
         ],
       ),
