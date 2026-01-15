@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:ai_vocab/pages/home_page.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
+import 'package:ai_vocab/services/ad_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -16,6 +17,9 @@ void main() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
+
+  // 初始化 AdMob（仅移动端）
+  await AdService().initialize();
 
   // 全屏沉浸式
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);

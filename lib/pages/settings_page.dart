@@ -18,15 +18,6 @@ class SettingsPage extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '我的',
-                      style: TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.bold,
-                        color: context.textPrimary,
-                      ),
-                    ),
-                    const SizedBox(height: 32),
                     _buildUserCard(context),
                     const SizedBox(height: 24),
                     _buildSettingsSection(context),
@@ -59,7 +50,7 @@ class SettingsPage extends StatelessWidget {
             height: 60,
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(60),
             ),
             child: const Icon(Icons.person, color: Colors.white, size: 32),
           ),

@@ -6,6 +6,7 @@ import 'package:ai_vocab/models/word_model.dart';
 import 'package:ai_vocab/models/word_progress.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
 import 'package:ai_vocab/providers/dict_provider.dart';
+import 'package:ai_vocab/services/ad_service.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 
@@ -519,21 +520,21 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
         },
         style: ElevatedButton.styleFrom(
           backgroundColor: primaryColor,
-          foregroundColor: Colors.white,
+          foregroundColor: context.textPrimary,
           elevation: 0,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(36),
           ),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            const Icon(Icons.directions_walk, size: 24),
+            const Icon(Icons.menu_book, size: 26),
             const SizedBox(width: 8),
             Text(
               label,
-              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
             ),
           ],
         ),
@@ -1104,6 +1105,9 @@ class _StudySessionPageState extends State<StudySessionPage> {
       _addedNewWordOnLastAction = addedToQueue;
     });
 
+    // 记录学习次数（用于广告展示）
+    AdService().recordStudy();
+
     _goToNextWord();
   }
 
@@ -1336,147 +1340,148 @@ class _WordCardPageState extends State<_WordCardPage>
   }
 
   Widget _buildCountdownView() {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 48, horizontal: 24),
-        decoration: BoxDecoration(
-          color: context.surfaceColor,
-          borderRadius: BorderRadius.circular(24),
-          boxShadow: context.isDark
-              ? null
-              : [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 20,
-                    offset: const Offset(0, 4),
-                  ),
-                ],
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+    return Column(
+      children: [
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 24, 24, 0),
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 24),
               decoration: BoxDecoration(
-                color: widget.isReview
-                    ? Colors.orange.withValues(alpha: 0.1)
-                    : widget.primaryColor.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(20),
+                color: context.surfaceColor,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: context.isDark
+                    ? null
+                    : [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.05),
+                          blurRadius: 20,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
               ),
-              child: Text(
-                widget.isReview ? '复习巩固' : '词汇背诵',
-                style: TextStyle(
-                  color: widget.isReview ? Colors.orange : widget.primaryColor,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-            const SizedBox(height: 32),
-            Text(
-              _word!.word,
-              style: TextStyle(
-                fontSize: 36,
-                fontWeight: FontWeight.bold,
-                color: context.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              _word!.phonetic,
-              style: TextStyle(fontSize: 16, color: context.textSecondary),
-            ),
-            const SizedBox(height: 40),
-            SizedBox(
-              width: 100,
-              height: 100,
-              child: Stack(
-                alignment: Alignment.center,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: widget.isReview
+                          ? Colors.orange.withValues(alpha: 0.1)
+                          : widget.primaryColor.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      widget.isReview ? '复习巩固' : '词汇背诵',
+                      style: TextStyle(
+                        color: widget.isReview
+                            ? Colors.orange
+                            : widget.primaryColor,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 32),
+                  Text(
+                    _word!.word,
+                    style: TextStyle(
+                      fontSize: 36,
+                      fontWeight: FontWeight.bold,
+                      color: context.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _word!.phonetic,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: context.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 40),
                   SizedBox(
                     width: 100,
                     height: 100,
-                    child: AnimatedBuilder(
-                      animation: _progressAnimation,
-                      builder: (context, child) {
-                        return CircularProgressIndicator(
-                          value: _progressAnimation.value,
-                          strokeWidth: 4,
-                          backgroundColor: context.dividerColor,
-                          valueColor: AlwaysStoppedAnimation(
-                            widget.primaryColor,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        SizedBox(
+                          width: 100,
+                          height: 100,
+                          child: AnimatedBuilder(
+                            animation: _progressAnimation,
+                            builder: (context, child) {
+                              return CircularProgressIndicator(
+                                value: _progressAnimation.value,
+                                strokeWidth: 4,
+                                backgroundColor: context.dividerColor,
+                                valueColor: AlwaysStoppedAnimation(
+                                  widget.primaryColor,
+                                ),
+                              );
+                            },
                           ),
-                        );
-                      },
+                        ),
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              _countdown.toString().padLeft(2, '0'),
+                              style: TextStyle(
+                                fontSize: 32,
+                                fontWeight: FontWeight.bold,
+                                color: widget.primaryColor,
+                              ),
+                            ),
+                            Text(
+                              '秒',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: context.textSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
-                  Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        _countdown.toString().padLeft(2, '0'),
-                        style: TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: widget.primaryColor,
-                        ),
-                      ),
-                      Text(
-                        '秒',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: context.textSecondary,
-                        ),
-                      ),
-                    ],
+                  const SizedBox(height: 32),
+                  Text(
+                    '释义即将显示...',
+                    style: TextStyle(
+                      fontSize: 14,
+                      color: context.textSecondary,
+                    ),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 32),
-            // 已充分掌握按钮
-            GestureDetector(
-              onTap: _handleMasteredClick,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 24,
-                  vertical: 12,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.teal.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(color: Colors.teal.withValues(alpha: 0.3)),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(
-                      Icons.check_circle_outline,
-                      size: 20,
-                      color: Colors.teal[600],
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      '已充分掌握',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: Colors.teal[600],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              '释义即将显示...',
-              style: TextStyle(fontSize: 14, color: context.textSecondary),
-            ),
-          ],
+          ),
         ),
-      ),
+        // 已充分掌握按钮 - 放在卡片外部底部
+        OutlinedButton.icon(
+          onPressed: _handleMasteredClick,
+          icon: const Icon(Icons.check_circle_outline, size: 24),
+          label: const Text(
+            '已充分掌握',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          ),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: context.textPrimary,
+            padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 14),
+            backgroundColor: Colors.indigo,
+            side: BorderSide(width: 1, color: Colors.indigo),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(30),
+            ),
+          ),
+        ),
+        const SizedBox(height: 48),
+      ],
     );
   }
 

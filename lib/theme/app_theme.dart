@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 class AppTheme {
-  static const Color primaryColor = Colors.green;
+  static const Color primaryColor = Colors.indigo;
 
   // 亮色主题颜色
   static const Color lightBackground = Color(0xFFF8FAFC);

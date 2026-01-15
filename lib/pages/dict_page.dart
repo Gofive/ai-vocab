@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:ai_vocab/db_helper.dart';
 import 'package:ai_vocab/models/study_settings.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
+import 'package:ai_vocab/widgets/native_ad_card.dart';
+import 'package:ai_vocab/services/ad_service.dart';
 
 class DictPage extends StatefulWidget {
   const DictPage({super.key});
@@ -103,20 +105,45 @@ class _DictPageState extends State<DictPage> {
                             crossAxisSpacing: 16,
                             childAspectRatio: 0.75,
                           ),
-                      delegate: SliverChildBuilderDelegate((context, index) {
-                        final dict = _dictList[index];
-                        final name = dict['name'] as String;
-                        final count = dict['word_count'] as int;
-                        final progress = _progressMap[name];
-                        final isSelected = _selectedDict == name;
-                        return _buildBookCard(
-                          name,
-                          count,
-                          progress,
-                          isSelected,
-                          primaryColor,
-                        );
-                      }, childCount: _dictList.length),
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) {
+                          // 在第3个位置插入广告（index=2）
+                          final adPosition = 2;
+                          final showAd =
+                              AdService().isSupported &&
+                              _dictList.length > adPosition;
+
+                          if (showAd && index == adPosition) {
+                            return const NativeAdCard();
+                          }
+
+                          // 调整实际词典的索引
+                          final dictIndex = showAd && index > adPosition
+                              ? index - 1
+                              : index;
+                          if (dictIndex >= _dictList.length) {
+                            return const SizedBox.shrink();
+                          }
+
+                          final dict = _dictList[dictIndex];
+                          final name = dict['name'] as String;
+                          final count = dict['word_count'] as int;
+                          final progress = _progressMap[name];
+                          final isSelected = _selectedDict == name;
+                          return _buildBookCard(
+                            name,
+                            count,
+                            progress,
+                            isSelected,
+                            primaryColor,
+                          );
+                        },
+                        childCount:
+                            _dictList.length +
+                            (AdService().isSupported && _dictList.length > 2
+                                ? 1
+                                : 0),
+                      ),
                     ),
                   ),
                   const SliverToBoxAdapter(child: SizedBox(height: 100)),

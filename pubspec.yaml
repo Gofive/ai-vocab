@@ -44,6 +44,7 @@ dependencies:
   flutter_riverpod: ^2.4.9 # 状态管理（选择词典/进度）
   path: ^1.9.1
   sqflite: ^2.4.2
+  google_mobile_ads: ^7.0.0 # AdMob 广告
 
 dev_dependencies:
   flutter_test:
