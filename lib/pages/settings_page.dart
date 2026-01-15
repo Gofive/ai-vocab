@@ -207,31 +207,16 @@ class _SettingsPageState extends State<SettingsPage> {
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Icon(icon, color: iconColor, size: 22),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: changePositive
-                      ? Colors.green.withOpacity(0.15)
-                      : Colors.red.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: Text(
-                  change,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w600,
-                    color: changePositive ? Colors.green : Colors.red,
-                  ),
-                ),
-              ),
-            ],
+            children: [Icon(icon, color: iconColor, size: 24)],
           ),
           const SizedBox(height: 8),
           Text(
             label,
-            style: TextStyle(fontSize: 13, color: context.textSecondary),
+            style: TextStyle(
+              fontSize: 13,
+              color: context.textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
           ),
           const SizedBox(height: 4),
           Text(
@@ -345,7 +330,7 @@ class _SettingsPageState extends State<SettingsPage> {
             icon: Icons.notifications_outlined,
             iconColor: primaryColor,
             title: '通知设置',
-            trailing: CupertinoSwitch(
+            trailing: Switch(
               value: _notificationEnabled,
               activeTrackColor: primaryColor,
               onChanged: (value) {
@@ -359,7 +344,7 @@ class _SettingsPageState extends State<SettingsPage> {
             icon: Icons.dark_mode_outlined,
             iconColor: primaryColor,
             title: '主题模式',
-            trailing: CupertinoSwitch(
+            trailing: Switch(
               value: _darkMode,
               activeTrackColor: primaryColor,
               onChanged: (value) {

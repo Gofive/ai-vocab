@@ -3,21 +3,37 @@ import 'package:flutter/material.dart';
 import 'package:ai_vocab/db_helper.dart';
 import 'package:ai_vocab/models/study_settings.dart';
 import 'package:ai_vocab/models/word_model.dart';
-import 'package:ai_vocab/models/word_progress.dart';
+import 'package:ai_vocab/models/word_card.dart';
+import 'package:ai_vocab/models/study_session.dart';
+import 'package:ai_vocab/models/review_log.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
 import 'package:ai_vocab/providers/dict_provider.dart';
 import 'package:ai_vocab/services/ad_service.dart';
+import 'package:ai_vocab/services/fsrs_service.dart';
+import 'package:ai_vocab/pages/learned_words_page.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
+import 'package:fsrs/fsrs.dart'
+    hide State; // Hide State to avoid conflict with Flutter's State
 
-/// 熟悉度等级 -> SM-2 Quality 映射
+/// 熟悉度等级 -> FSRS Rating 映射
+/// _Requirements: 4.2, 4.3, 4.4_
 enum FamiliarityLevel {
-  mastered, // 记住了 -> quality 5
-  familiar, // 有印象 -> quality 3
-  unfamiliar, // 没记住 -> quality 1
+  mastered, // 记住了 -> Rating.easy
+  familiar, // 有印象 -> Rating.good
+  unfamiliar, // 没记住 -> Rating.again
 }
 
 extension FamiliarityLevelExt on FamiliarityLevel {
+  /// 获取 SM-2 quality 值（用于兼容旧代码）
+  ///
+  /// 此属性已废弃，请使用 [fsrsRating] 替代。
+  /// SM-2 算法已被 FSRS 替代。
+  ///
+  /// _Requirements: 3.1_
+  @Deprecated(
+    'Use fsrsRating instead. SM-2 algorithm has been replaced by FSRS.',
+  )
   int get quality {
     switch (this) {
       case FamiliarityLevel.mastered:
@@ -26,6 +42,19 @@ extension FamiliarityLevelExt on FamiliarityLevel {
         return 3;
       case FamiliarityLevel.unfamiliar:
         return 1;
+    }
+  }
+
+  /// 获取 FSRS Rating 值
+  /// _Requirements: 4.2, 4.3, 4.4_
+  Rating get fsrsRating {
+    switch (this) {
+      case FamiliarityLevel.mastered:
+        return Rating.easy; // 记住了 -> Easy
+      case FamiliarityLevel.familiar:
+        return Rating.good; // 有印象 -> Good
+      case FamiliarityLevel.unfamiliar:
+        return Rating.again; // 没记住 -> Again
     }
   }
 }
@@ -125,6 +154,7 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
   int _streakDays = 0;
   List<DateTime> _weekDates = [];
   Set<DateTime> _studiedDates = {};
+  int _dueReviewCount = 0; // 待复习单词数量
 
   @override
   void initState() {
@@ -132,6 +162,7 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
     _initWeekDates();
     _loadSessionStatus();
     _loadStreakData();
+    _loadDueReviewCount();
   }
 
   void _initWeekDates() {
@@ -159,6 +190,17 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
     }
   }
 
+  /// 加载待复习单词数量
+  Future<void> _loadDueReviewCount() async {
+    final db = DBHelper();
+    final dueCards = await db.getDueCards(widget.dictName, limit: 10000);
+    if (mounted) {
+      setState(() {
+        _dueReviewCount = dueCards.length;
+      });
+    }
+  }
+
   @override
   void didUpdateWidget(covariant _StudyStatsPage oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -177,6 +219,8 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
         _loading = false;
       });
     }
+    // 同时更新待复习数量
+    _loadDueReviewCount();
   }
 
   @override
@@ -207,6 +251,11 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
                     _buildTaskCards(context, primaryColor),
                     const SizedBox(height: 16),
 
+                    // 待复习词汇统计组件
+                    if (_dueReviewCount > 0)
+                      _buildDueReviewCard(context, primaryColor),
+                    if (_dueReviewCount > 0) const SizedBox(height: 16),
+
                     // 词库总进度
                     _buildTotalProgress(context, primaryColor),
                   ],
@@ -224,13 +273,7 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
                     top: BorderSide(color: context.dividerColor, width: 0.5),
                   ),
                 ),
-                child: _buildStartButton(
-                  context,
-                  primaryColor,
-                  _sessionStatus == TodaySessionStatus.inProgress
-                      ? '继续学习'
-                      : '开始学习',
-                ),
+                child: _buildBottomButtons(context, primaryColor),
               ),
           ],
         ),
@@ -418,12 +461,22 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
                 ),
               ),
               const Spacer(),
-              Text(
-                '$learned / $total',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: primaryColor,
+              // 查看已学词表按钮
+              GestureDetector(
+                onTap: () => _openLearnedWordsPage(context),
+                child: Row(
+                  children: [
+                    Text(
+                      '$learned / $total',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: primaryColor,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(Icons.chevron_right, size: 18, color: primaryColor),
+                  ],
                 ),
               ),
             ],
@@ -444,6 +497,160 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
             style: TextStyle(fontSize: 11, color: context.textSecondary),
           ),
         ],
+      ),
+    );
+  }
+
+  /// 待复习词汇统计组件
+  Widget _buildDueReviewCard(BuildContext context, Color primaryColor) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: context.surfaceColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: context.dividerColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.refresh, size: 16, color: Colors.orange),
+              const SizedBox(width: 6),
+              Text(
+                '待复习词汇',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: context.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '$_dueReviewCount 个',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.orange,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            '这些单词已到复习时间，建议及时复习以巩固记忆',
+            style: TextStyle(fontSize: 11, color: context.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 底部按钮区域
+  Widget _buildBottomButtons(BuildContext context, Color primaryColor) {
+    // 如果今日已完成，显示完成状态
+    if (_sessionStatus == TodaySessionStatus.completed) {
+      // 如果有待复习词，显示继续复习按钮
+      if (_dueReviewCount > 0) {
+        return _buildReviewButton(context, primaryColor);
+      }
+
+      // 否则显示完成状态
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: Colors.teal.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.check_circle, color: Colors.teal[400], size: 22),
+            const SizedBox(width: 8),
+            Text(
+              '今日学习已完成',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: Colors.teal[400],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 如果有待复习词，显示两个按钮
+    if (_dueReviewCount > 0) {
+      return Column(
+        children: [
+          // 继续复习按钮
+          _buildReviewButton(context, primaryColor),
+          const SizedBox(height: 8),
+          // 开始学习按钮
+          _buildStartButton(
+            context,
+            primaryColor,
+            _sessionStatus == TodaySessionStatus.inProgress ? '继续学习' : '开始学习',
+            isSecondary: true,
+          ),
+        ],
+      );
+    }
+
+    // 默认显示开始学习按钮
+    return _buildStartButton(
+      context,
+      primaryColor,
+      _sessionStatus == TodaySessionStatus.inProgress ? '继续学习' : '开始学习',
+    );
+  }
+
+  /// 继续复习按钮
+  Widget _buildReviewButton(BuildContext context, Color primaryColor) {
+    return SizedBox(
+      width: double.infinity,
+      height: 50,
+      child: ElevatedButton(
+        onPressed: () async {
+          // TODO: 实现复习页面跳转
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('复习功能即将上线'),
+              duration: Duration(seconds: 2),
+            ),
+          );
+        },
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.orange,
+          foregroundColor: Colors.white,
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(25),
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.refresh, size: 24),
+            const SizedBox(width: 8),
+            Text(
+              '继续复习 ($_dueReviewCount)',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 打开已学词表页面
+  void _openLearnedWordsPage(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LearnedWordsPage(dictName: widget.dictName),
       ),
     );
   }
@@ -561,35 +768,9 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
   Widget _buildStartButton(
     BuildContext context,
     Color primaryColor,
-    String label,
-  ) {
-    // 如果今日已完成，显示完成状态
-    if (_sessionStatus == TodaySessionStatus.completed) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          color: Colors.teal.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(24),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.check_circle, color: Colors.teal[400], size: 22),
-            const SizedBox(width: 8),
-            Text(
-              '今日学习已完成',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w600,
-                color: Colors.teal[400],
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
+    String label, {
+    bool isSecondary = false,
+  }) {
     return SizedBox(
       width: double.infinity,
       height: 50,
@@ -605,15 +786,17 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
                   widget.onRefresh();
                   _loadSessionStatus();
                   _loadStreakData();
+                  _loadDueReviewCount();
                 },
               ),
             ),
           );
         },
         style: ElevatedButton.styleFrom(
-          backgroundColor: primaryColor,
-          foregroundColor: Colors.white,
+          backgroundColor: isSecondary ? context.surfaceColor : primaryColor,
+          foregroundColor: isSecondary ? context.textPrimary : Colors.white,
           elevation: 0,
+          side: isSecondary ? BorderSide(color: context.dividerColor) : null,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(25),
           ),
@@ -621,11 +804,19 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.menu_book, size: 24),
+            Icon(
+              Icons.menu_book,
+              size: 24,
+              color: isSecondary ? context.textPrimary : Colors.white,
+            ),
             const SizedBox(width: 8),
             Text(
               label,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w900,
+                color: isSecondary ? context.textPrimary : Colors.white,
+              ),
             ),
           ],
         ),
@@ -653,13 +844,14 @@ class StudySessionPage extends StatefulWidget {
 
 class _StudySessionPageState extends State<StudySessionPage> {
   final AudioPlayer _audioPlayer = AudioPlayer();
+  final FSRSService _fsrsService = FSRSService(); // FSRS 服务实例
   StudySession? _session;
   int _currentIndex = 0;
   bool _loading = true;
   int _rebuildKey = 0; // 用于强制重建页面
 
   // 撤销相关
-  WordProgress? _lastAction; // 上一次操作的单词进度（用于撤销）
+  WordCard? _lastAction; // 上一次操作的单词卡片（用于撤销）
   int? _lastActionIndex; // 上一次操作的索引
   bool _canUndo = false; // 是否可以撤销
   bool _addedNewWordOnLastAction = false; // 上次操作是否补充了新词
@@ -711,50 +903,50 @@ class _StudySessionPageState extends State<StudySessionPage> {
   }
 
   /// 处理倒计时阶段点击"已充分掌握"
+  /// 使用 FSRS 算法更新卡片状态
   Future<void> _handleMasteredInCountdown() async {
     if (_session == null) return;
 
     final queue = _session!.queue;
-    final currentWordProgress = queue[_currentIndex];
-    final isNewWord = currentWordProgress.state == WordState.newWord;
+    final currentWordCard = queue[_currentIndex];
+    final isNewWord = !currentWordCard.isReview; // 新词 = 非复习卡片
 
-    // 保存撤销信息
+    // 保存撤销信息（保存 WordCard 的副本）
     _lastActionIndex = _currentIndex;
-    _lastAction = WordProgress(
-      wordId: currentWordProgress.wordId,
-      word: currentWordProgress.word,
-      dictName: widget.dictName,
-      easeFactor: currentWordProgress.easeFactor,
-      interval: currentWordProgress.interval,
-      repetition: currentWordProgress.repetition,
-      nextReviewDate: currentWordProgress.nextReviewDate,
-      state: currentWordProgress.state,
-      lastModified: currentWordProgress.lastModified,
-      isReview: currentWordProgress.isReview,
-    );
-
-    // 创建新进度，设置最大间隔（30天）
-    final progress = WordProgress(
-      wordId: currentWordProgress.wordId,
-      word: currentWordProgress.word,
-      dictName: widget.dictName,
-      easeFactor: 2.5,
-      interval: 30,
-      repetition: 99, // 已掌握
-      nextReviewDate: DateTime.now().add(const Duration(days: 30)),
-      state: WordState.mastered,
-      lastModified: DateTime.now(),
-      isReview: currentWordProgress.isReview,
-    );
+    _lastAction = currentWordCard.copyWith();
 
     final db = DBHelper();
-    await db.updateWordProgress(progress);
+    final now = DateTime.now().toUtc();
+
+    // 使用 FSRS 算法更新卡片 - 使用 Rating.easy 表示"已充分掌握"
+    final result = _fsrsService.reviewCard(
+      currentWordCard.card,
+      Rating.easy,
+      now: now,
+    );
+
+    // 更新 WordCard 的 FSRS Card 对象
+    currentWordCard.card = result.card;
+    currentWordCard.reps += 1;
+
+    // 保存更新后的 WordCard 到数据库
+    await db.saveWordCard(currentWordCard);
+
+    // 记录 ReviewLog
+    final reviewLog = ReviewLogEntry.fromFSRSLog(
+      wordId: currentWordCard.wordId,
+      dictName: widget.dictName,
+      fsrsLog: result.reviewLog,
+      reviewDatetime: now,
+    );
+    await db.logReview(reviewLog);
+
     await db.markSessionWordDone(_session!.id, _currentIndex);
 
     // 如果是新词被标记为掌握，补充一个新词到队列
     bool addedNewWord = false;
     if (isNewWord) {
-      final newWord = await db.getNextNewWord(
+      final newWord = await db.getNextNewWordCard(
         widget.dictName,
         widget.settings,
         _session!.queue,
@@ -772,7 +964,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
     });
 
     // 显示撤销提示
-    _showUndoSnackBar(currentWordProgress.word, addedNewWord);
+    _showUndoSnackBar(currentWordCard.word, addedNewWord);
 
     // 自动跳转到下一个
     _goToNextWord();
@@ -1038,22 +1230,28 @@ class _StudySessionPageState extends State<StudySessionPage> {
   Widget _buildFamiliarityButtons(BuildContext context) {
     final currentWord = _session?.queue[_currentIndex];
     final isReview = currentWord?.isReview ?? false;
-    final currentInterval = currentWord?.interval ?? 0;
-    final currentEF = currentWord?.easeFactor ?? 2.5;
-    final currentRepetition = currentWord?.repetition ?? 0;
 
-    // 使用 WordProgress 的静态方法预计算下次复习间隔
-    String calcNextReview(int quality) {
-      if (quality < 3) {
+    // 使用 FSRS 预览间隔
+    // _Requirements: 5.1, 5.2, 5.3, 5.4, 5.5_
+    final now = DateTime.now().toUtc();
+    final card = currentWord?.card;
+
+    // 获取各评分选项的预览间隔
+    Map<Rating, Duration> previewIntervals = {};
+    if (card != null) {
+      previewIntervals = _fsrsService.previewIntervals(card, now: now);
+    }
+
+    // 格式化预览间隔为可读字符串
+    String getPreviewText(Rating rating) {
+      if (previewIntervals.isEmpty) return '...';
+      final duration = previewIntervals[rating];
+      if (duration == null) return '...';
+      // 对于 Again 评分，显示"稍后"
+      if (rating == Rating.again && duration.inMinutes < 60) {
         return '稍后';
       }
-      final days = WordProgress.previewNextInterval(
-        quality,
-        currentInterval,
-        currentEF,
-        currentRepetition,
-      );
-      return WordProgress.formatInterval(days);
+      return _fsrsService.formatInterval(duration);
     }
 
     return Container(
@@ -1065,7 +1263,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
             isReview ? '记得' : '太简单',
             Icons.sentiment_satisfied_alt,
             Colors.teal,
-            calcNextReview(5),
+            getPreviewText(Rating.easy),
             onTap: () => _handleFamiliarity(FamiliarityLevel.mastered),
           ),
           const SizedBox(width: 12),
@@ -1074,7 +1272,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
             isReview ? '模糊' : '有困难',
             Icons.sentiment_neutral,
             Colors.orange,
-            calcNextReview(3),
+            getPreviewText(Rating.good),
             onTap: () => _handleFamiliarity(FamiliarityLevel.familiar),
           ),
           const SizedBox(width: 12),
@@ -1083,7 +1281,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
             isReview ? '忘了' : '不认识',
             Icons.sentiment_dissatisfied,
             context.textSecondary,
-            calcNextReview(1),
+            getPreviewText(Rating.again),
             onTap: () => _handleFamiliarity(FamiliarityLevel.unfamiliar),
           ),
         ],
@@ -1091,71 +1289,68 @@ class _StudySessionPageState extends State<StudySessionPage> {
     );
   }
 
+  /// 处理熟悉度评分
+  /// 使用 FSRS 算法更新卡片状态
+  /// _Requirements: 4.2, 4.3, 4.4, 4.6_
   Future<void> _handleFamiliarity(FamiliarityLevel level) async {
     if (_session == null) return;
 
     final queue = _session!.queue;
-    final currentWordProgress = queue[_currentIndex];
-    final isNewWord = currentWordProgress.state == WordState.newWord;
+    final currentWordCard = queue[_currentIndex];
+    final isNewWord = !currentWordCard.isReview; // 新词 = 非复习卡片
 
-    // 保存原始状态用于撤销
-    _lastAction = WordProgress(
-      wordId: currentWordProgress.wordId,
-      word: currentWordProgress.word,
-      dictName: widget.dictName,
-      easeFactor: currentWordProgress.easeFactor,
-      interval: currentWordProgress.interval,
-      repetition: currentWordProgress.repetition,
-      nextReviewDate: currentWordProgress.nextReviewDate,
-      state: currentWordProgress.state,
-      lastModified: currentWordProgress.lastModified,
-      isReview: currentWordProgress.isReview,
-    );
+    // 保存原始状态用于撤销（保存 WordCard 的副本）
+    _lastAction = currentWordCard.copyWith();
     _lastActionIndex = _currentIndex;
 
-    final progress = WordProgress(
-      wordId: currentWordProgress.wordId,
-      word: currentWordProgress.word,
-      dictName: widget.dictName,
-      easeFactor: currentWordProgress.easeFactor,
-      interval: currentWordProgress.interval,
-      repetition: currentWordProgress.repetition,
-      nextReviewDate: currentWordProgress.nextReviewDate,
-      state: currentWordProgress.state,
-      lastModified: currentWordProgress.lastModified,
-      isReview: currentWordProgress.isReview,
+    final db = DBHelper();
+    final now = DateTime.now().toUtc();
+
+    // 使用 FSRS 算法更新卡片
+    // _Requirements: 4.2, 4.3, 4.4_
+    final result = _fsrsService.reviewCard(
+      currentWordCard.card,
+      level.fsrsRating,
+      now: now,
     );
 
-    progress.updateWithQuality(level.quality);
+    // 更新 WordCard 的 FSRS Card 对象
+    currentWordCard.card = result.card;
+    currentWordCard.reps += 1;
+    if (level == FamiliarityLevel.unfamiliar) {
+      currentWordCard.lapses += 1;
+    }
 
-    final db = DBHelper();
-    await db.updateWordProgress(progress);
+    // 保存更新后的 WordCard 到数据库
+    await db.saveWordCard(currentWordCard);
+
+    // 记录 ReviewLog
+    // _Requirements: 9.1, 9.2_
+    final reviewLog = ReviewLogEntry.fromFSRSLog(
+      wordId: currentWordCard.wordId,
+      dictName: widget.dictName,
+      fsrsLog: result.reviewLog,
+      reviewDatetime: now,
+    );
+    await db.logReview(reviewLog);
+
     await db.markSessionWordDone(_session!.id, _currentIndex);
 
     // 关键逻辑：点击"不认识"时，立即将单词加入队列末尾作为复习
+    // _Requirements: 4.6_
     bool addedToQueue = false;
     if (level == FamiliarityLevel.unfamiliar) {
-      final repeatWord = WordProgress(
-        wordId: currentWordProgress.wordId,
-        word: currentWordProgress.word,
-        dictName: widget.dictName,
-        easeFactor: progress.easeFactor,
-        interval: progress.interval,
-        repetition: progress.repetition,
-        nextReviewDate: progress.nextReviewDate,
-        state: progress.state,
-        lastModified: progress.lastModified,
-        isReview: true, // 标记为复习单词
-      );
+      // 创建一个复习卡片加入队列
+      final repeatCard = currentWordCard.copyWith();
       setState(() {
-        _session!.queue.add(repeatWord);
+        _session!.queue.add(repeatCard);
       });
       // 添加到数据库队列
-      await db.addWordToSessionQueue(_session!.id, repeatWord.wordId);
+      await db.addWordToSessionQueue(_session!.id, repeatCard.wordId);
       addedToQueue = true;
 
       print(
-        'DEBUG: 单词 "${currentWordProgress.word}" 点击不认识，已加入队列末尾 (isNewWord: $isNewWord)',
+        'DEBUG: 单词 "${currentWordCard.word}" 点击不认识，已加入队列末尾 (isNewWord: $isNewWord)',
       );
     }
 

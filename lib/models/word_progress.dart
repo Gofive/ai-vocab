@@ -1,4 +1,7 @@
 /// 单词学习状态
+@Deprecated(
+  'Use FSRS State instead. This enum is part of the SM-2 algorithm which has been replaced by FSRS.',
+)
 enum WordState {
   newWord, // 新词
   learning, // 学习中
@@ -6,6 +9,12 @@ enum WordState {
 }
 
 /// 单词学习进度模型 (改进版 SM-2 算法)
+///
+/// 此类已废弃，请使用 [WordCard] 替代。
+/// FSRS 算法提供更精准的记忆预测能力。
+///
+/// _Requirements: 3.1_
+@Deprecated('Use WordCard instead. SM-2 algorithm has been replaced by FSRS.')
 class WordProgress {
   final int wordId;
   final String word;

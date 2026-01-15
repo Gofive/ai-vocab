@@ -2,10 +2,18 @@ import 'dart:io';
 import 'package:ai_vocab/models/study_settings.dart';
 import 'package:ai_vocab/models/word_model.dart';
 import 'package:ai_vocab/models/word_progress.dart';
+import 'package:ai_vocab/models/word_card.dart';
+import 'package:ai_vocab/models/review_log.dart';
+import 'package:ai_vocab/models/study_session.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path_provider/path_provider.dart';
+
+/// 数据库版本号
+/// - 1: 初始版本 (SM-2)
+/// - 2: FSRS 迁移版本
+const int _dbVersion = 2;
 
 class DBHelper {
   static Database? _db;
@@ -110,6 +118,577 @@ class DBHelper {
         FOREIGN KEY (session_id) REFERENCES study_session(id) ON DELETE CASCADE
       )
     ''');
+
+    // 检查并升级数据库结构到 FSRS
+    await _upgradeToFSRS(db);
+  }
+
+  /// 检查数据库版本并升级到 FSRS 结构
+  Future<void> _upgradeToFSRS(Database db) async {
+    // 检查当前数据库版本
+    final currentVersion = await _getDbVersion(db);
+
+    if (currentVersion < _dbVersion) {
+      print('DEBUG: 数据库版本 $currentVersion -> $_dbVersion，开始升级...');
+
+      // 添加 FSRS 字段到 user_study_progress 表
+      await _addFSRSColumns(db);
+
+      // 创建 review_logs 表
+      await _createReviewLogsTable(db);
+
+      // 更新数据库版本
+      await _setDbVersion(db, _dbVersion);
+
+      print('DEBUG: 数据库升级完成');
+    }
+  }
+
+  /// 获取数据库版本号
+  Future<int> _getDbVersion(Database db) async {
+    try {
+      final result = await db.query(
+        'user_settings',
+        where: 'key = ?',
+        whereArgs: ['db_version'],
+      );
+      if (result.isEmpty) return 1; // 默认版本 1 (SM-2)
+      return int.tryParse(result.first['value'] as String? ?? '1') ?? 1;
+    } catch (e) {
+      // 表可能不存在
+      return 1;
+    }
+  }
+
+  /// 设置数据库版本号
+  Future<void> _setDbVersion(Database db, int version) async {
+    await db.insert('user_settings', {
+      'key': 'db_version',
+      'value': version.toString(),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// 添加 FSRS 字段到 user_study_progress 表
+  Future<void> _addFSRSColumns(Database db) async {
+    // 检查是否已有 FSRS 字段
+    final tableInfo = await db.rawQuery(
+      "PRAGMA table_info(user_study_progress)",
+    );
+    final existingColumns = tableInfo.map((c) => c['name'] as String).toSet();
+
+    // FSRS 新增字段列表
+    final fsrsColumns = <String, String>{
+      'due': 'TEXT', // 下次复习时间 (ISO8601)
+      'stability': 'REAL DEFAULT 0', // 记忆稳定性
+      'difficulty': 'REAL DEFAULT 5.0', // 单词难度 (1-10)
+      'elapsed_days': 'INTEGER DEFAULT 0', // 自上次复习以来的天数
+      'scheduled_days': 'INTEGER DEFAULT 0', // 计划的复习间隔天数
+      'reps': 'INTEGER DEFAULT 0', // 成功复习次数
+      'lapses': 'INTEGER DEFAULT 0', // 遗忘次数
+      'last_review': 'TEXT', // 上次复习时间 (ISO8601)
+    };
+
+    for (final entry in fsrsColumns.entries) {
+      if (!existingColumns.contains(entry.key)) {
+        try {
+          await db.execute(
+            'ALTER TABLE user_study_progress ADD COLUMN ${entry.key} ${entry.value}',
+          );
+          print('DEBUG: 添加列 ${entry.key} 到 user_study_progress');
+        } catch (e) {
+          print('DEBUG: 添加列 ${entry.key} 失败: $e');
+        }
+      }
+    }
+  }
+
+  /// 创建 review_logs 表
+  Future<void> _createReviewLogsTable(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS review_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        word_id INTEGER NOT NULL,
+        dict_name TEXT NOT NULL,
+        rating INTEGER NOT NULL,
+        state INTEGER NOT NULL,
+        due TEXT NOT NULL,
+        stability REAL NOT NULL,
+        difficulty REAL NOT NULL,
+        elapsed_days INTEGER NOT NULL,
+        scheduled_days INTEGER NOT NULL,
+        review_datetime TEXT NOT NULL,
+        FOREIGN KEY (word_id) REFERENCES words(id)
+      )
+    ''');
+
+    // 创建索引以优化查询性能
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_review_logs_word 
+      ON review_logs(word_id, dict_name)
+    ''');
+
+    await db.execute('''
+      CREATE INDEX IF NOT EXISTS idx_review_logs_datetime 
+      ON review_logs(review_datetime)
+    ''');
+
+    print('DEBUG: review_logs 表创建完成');
+  }
+
+  /// 检查是否需要迁移到 FSRS
+  Future<bool> needsFSRSMigration() async {
+    final db = await database;
+    final version = await _getDbVersion(db);
+
+    // 如果版本已经是 FSRS 版本，检查是否有未迁移的数据
+    if (version >= _dbVersion) {
+      // 检查是否有 SM-2 数据但没有 FSRS 数据的记录
+      final unmigrated = await db.rawQuery('''
+        SELECT COUNT(*) as count FROM user_study_progress
+        WHERE state > 0 AND (due IS NULL OR due = '')
+      ''');
+      return (unmigrated.first['count'] as int? ?? 0) > 0;
+    }
+
+    return true;
+  }
+
+  /// 获取数据库文件路径
+  Future<String> getDatabasePath() async {
+    if (Platform.isWindows || Platform.isLinux) {
+      final documentsDirectory = await getApplicationDocumentsDirectory();
+      return join(documentsDirectory.path, "vocab.db");
+    } else {
+      return join(await getDatabasesPath(), "vocab.db");
+    }
+  }
+
+  // ==================== FSRS 数据迁移服务 ====================
+
+  /// 备份数据库
+  ///
+  /// 在迁移前创建数据库备份，以便迁移失败时可以回滚。
+  /// 返回备份文件的路径。
+  ///
+  /// _Requirements: 8.5_
+  Future<String> backupDatabase() async {
+    final dbPath = await getDatabasePath();
+    final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-');
+    final backupPath = '$dbPath.backup_$timestamp';
+
+    final dbFile = File(dbPath);
+    if (await dbFile.exists()) {
+      await dbFile.copy(backupPath);
+      print('DEBUG: 数据库已备份到 $backupPath');
+    }
+
+    return backupPath;
+  }
+
+  /// 从备份恢复数据库
+  ///
+  /// 当迁移失败时，使用此方法恢复到备份状态。
+  ///
+  /// _Requirements: 2.4_
+  Future<void> _restoreFromBackup(String backupPath) async {
+    final dbPath = await getDatabasePath();
+    final backupFile = File(backupPath);
+
+    if (await backupFile.exists()) {
+      // 关闭当前数据库连接
+      if (_db != null) {
+        await _db!.close();
+        _db = null;
+      }
+
+      // 恢复备份
+      await backupFile.copy(dbPath);
+      print('DEBUG: 数据库已从备份恢复: $backupPath');
+
+      // 重新打开数据库
+      _db = await _initDB();
+    }
+  }
+
+  /// 迁移 SM-2 数据到 FSRS 格式
+  ///
+  /// 将现有的 SM-2 学习进度数据转换为 FSRS 格式。
+  /// 迁移策略：
+  /// - stability = interval * 0.9 (估算)
+  /// - difficulty = 5.0 (固定中等难度)
+  /// - reps = repetition (直接复制)
+  /// - state: 0 -> 保持新卡, >=1 -> State.review
+  /// - lapses = 0 (无历史数据)
+  /// - elapsed_days = 0 (无历史数据)
+  /// - scheduled_days = interval
+  /// - due = next_review_date (直接复制)
+  /// - last_review = last_modified (直接复制)
+  ///
+  /// _Requirements: 2.2, 2.3, 2.4, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6_
+  Future<void> migrateToFSRS() async {
+    final db = await database;
+
+    // 1. 备份数据库
+    final backupPath = await backupDatabase();
+
+    try {
+      // 2. 获取所有需要迁移的 SM-2 数据
+      // 只迁移 state > 0 的记录（已学习过的单词）
+      final sm2Records = await db.rawQuery('''
+        SELECT word_id, dict_name, ease_factor, interval, repetition,
+               next_review_date, state, last_modified
+        FROM user_study_progress
+        WHERE state > 0 AND (due IS NULL OR due = '')
+      ''');
+
+      print('DEBUG: 找到 ${sm2Records.length} 条需要迁移的 SM-2 记录');
+
+      if (sm2Records.isEmpty) {
+        print('DEBUG: 没有需要迁移的数据');
+        return;
+      }
+
+      // 3. 开始事务进行迁移
+      await db.transaction((txn) async {
+        for (final record in sm2Records) {
+          final wordId = record['word_id'] as int;
+          final dictName = record['dict_name'] as String;
+          final interval = record['interval'] as int? ?? 0;
+          final repetition = record['repetition'] as int? ?? 0;
+          final nextReviewDate = record['next_review_date'] as String?;
+          final sm2State = record['state'] as int? ?? 0;
+          final lastModified = record['last_modified'] as String?;
+
+          // SM-2 到 FSRS 的转换
+          // stability = interval * 0.9 (估算遗忘速率)
+          final stability = interval > 0 ? interval * 0.9 : 0.0;
+
+          // difficulty = 5.0 (固定中等难度)
+          const difficulty = 5.0;
+
+          // state: SM-2 state >= 1 -> FSRS State.review (index = 2)
+          // FSRS State: 0=New, 1=Learning, 2=Review, 3=Relearning
+          final fsrsState = sm2State >= 1 ? 2 : 0;
+
+          // due: 使用 next_review_date，如果为空则使用当前时间
+          final due =
+              nextReviewDate ?? DateTime.now().toUtc().toIso8601String();
+
+          // last_review: 使用 last_modified
+          final lastReview = lastModified;
+
+          // 更新记录
+          await txn.update(
+            'user_study_progress',
+            {
+              'due': due,
+              'stability': stability,
+              'difficulty': difficulty,
+              'elapsed_days': 0,
+              'scheduled_days': interval,
+              'reps': repetition,
+              'lapses': 0,
+              'state': fsrsState,
+              'last_review': lastReview,
+            },
+            where: 'word_id = ? AND dict_name = ?',
+            whereArgs: [wordId, dictName],
+          );
+        }
+      });
+
+      print('DEBUG: FSRS 数据迁移完成，共迁移 ${sm2Records.length} 条记录');
+    } catch (e) {
+      // 4. 迁移失败，回滚到备份
+      print('DEBUG: FSRS 迁移失败: $e，正在回滚...');
+      await _restoreFromBackup(backupPath);
+      rethrow;
+    }
+  }
+
+  /// 获取迁移状态
+  ///
+  /// 返回迁移相关的统计信息
+  Future<Map<String, int>> getMigrationStatus() async {
+    final db = await database;
+
+    // 总记录数
+    final totalResult = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM user_study_progress WHERE state > 0',
+    );
+    final total = totalResult.first['count'] as int? ?? 0;
+
+    // 已迁移记录数（有 FSRS 数据）
+    final migratedResult = await db.rawQuery('''
+      SELECT COUNT(*) as count FROM user_study_progress
+      WHERE state > 0 AND due IS NOT NULL AND due != ''
+    ''');
+    final migrated = migratedResult.first['count'] as int? ?? 0;
+
+    // 未迁移记录数
+    final unmigratedResult = await db.rawQuery('''
+      SELECT COUNT(*) as count FROM user_study_progress
+      WHERE state > 0 AND (due IS NULL OR due = '')
+    ''');
+    final unmigrated = unmigratedResult.first['count'] as int? ?? 0;
+
+    return {'total': total, 'migrated': migrated, 'unmigrated': unmigrated};
+  }
+
+  // ==================== FSRS WordCard CRUD 操作 ====================
+
+  /// 获取 FSRS 卡片
+  ///
+  /// 根据 wordId 和 dictName 获取单词的 FSRS 卡片数据。
+  /// 如果卡片不存在，返回 null。
+  ///
+  /// _Requirements: 6.1_
+  Future<WordCard?> getWordCard(int wordId, String dictName) async {
+    final db = await database;
+
+    final results = await db.rawQuery(
+      '''
+      SELECT usp.word_id, usp.dict_name, usp.due, usp.stability, usp.difficulty,
+             usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
+             usp.state, usp.last_review, w.word
+      FROM user_study_progress usp
+      JOIN words w ON usp.word_id = w.id
+      WHERE usp.word_id = ? AND usp.dict_name = ?
+        AND usp.due IS NOT NULL AND usp.due != ''
+    ''',
+      [wordId, dictName],
+    );
+
+    if (results.isEmpty) return null;
+
+    return WordCard.fromMap(results.first);
+  }
+
+  /// 保存 FSRS 卡片
+  ///
+  /// 将 WordCard 保存到数据库。如果记录已存在则更新，否则插入新记录。
+  ///
+  /// _Requirements: 6.1_
+  Future<void> saveWordCard(WordCard card) async {
+    final db = await database;
+
+    final map = card.toMap();
+
+    // 使用 REPLACE 语义：如果主键存在则更新，否则插入
+    await db.insert(
+      'user_study_progress',
+      map,
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// 获取待复习的 FSRS 卡片
+  ///
+  /// 查询指定词典中所有到期需要复习的卡片。
+  /// 按 due 日期升序排列（最早到期的优先）。
+  ///
+  /// [dictName] - 词典名称
+  /// [limit] - 返回的最大卡片数量，默认 100
+  ///
+  /// _Requirements: 6.1, 6.2_
+  Future<List<WordCard>> getDueCards(String dictName, {int limit = 100}) async {
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+
+    final results = await db.rawQuery(
+      '''
+      SELECT usp.word_id, usp.dict_name, usp.due, usp.stability, usp.difficulty,
+             usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
+             usp.state, usp.last_review, w.word
+      FROM user_study_progress usp
+      JOIN words w ON usp.word_id = w.id
+      WHERE usp.dict_name = ?
+        AND usp.due IS NOT NULL AND usp.due != ''
+        AND usp.due <= ?
+      ORDER BY usp.due ASC
+      LIMIT ?
+    ''',
+      [dictName, now, limit],
+    );
+
+    return results.map((row) => WordCard.fromMap(row)).toList();
+  }
+
+  /// 获取所有 FSRS 卡片（包括未到期的）
+  ///
+  /// 用于统计和调试目的。
+  ///
+  /// [dictName] - 词典名称
+  /// [limit] - 返回的最大卡片数量，默认 1000
+  Future<List<WordCard>> getAllWordCards(
+    String dictName, {
+    int limit = 1000,
+  }) async {
+    final db = await database;
+
+    final results = await db.rawQuery(
+      '''
+      SELECT usp.word_id, usp.dict_name, usp.due, usp.stability, usp.difficulty,
+             usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
+             usp.state, usp.last_review, w.word
+      FROM user_study_progress usp
+      JOIN words w ON usp.word_id = w.id
+      WHERE usp.dict_name = ?
+        AND usp.due IS NOT NULL AND usp.due != ''
+      ORDER BY usp.due ASC
+      LIMIT ?
+    ''',
+      [dictName, limit],
+    );
+
+    return results.map((row) => WordCard.fromMap(row)).toList();
+  }
+
+  /// 创建新的 FSRS 卡片
+  ///
+  /// 为新单词创建一个初始化的 FSRS 卡片。
+  ///
+  /// [wordId] - 单词 ID
+  /// [word] - 单词文本
+  /// [dictName] - 词典名称
+  ///
+  /// 返回创建的 WordCard 对象
+  Future<WordCard> createWordCard(
+    int wordId,
+    String word,
+    String dictName,
+  ) async {
+    final card = WordCard(wordId: wordId, word: word, dictName: dictName);
+
+    await saveWordCard(card);
+    return card;
+  }
+
+  // ==================== FSRS ReviewLog 操作 ====================
+
+  /// 记录复习日志
+  ///
+  /// 将复习日志保存到 review_logs 表，用于未来的 FSRS 参数优化。
+  ///
+  /// [log] - ReviewLogEntry 对象，包含复习的详细信息
+  ///
+  /// 返回插入记录的 ID
+  ///
+  /// _Requirements: 9.1, 9.2_
+  Future<int> logReview(ReviewLogEntry log) async {
+    final db = await database;
+
+    final id = await db.insert('review_logs', log.toMap());
+
+    return id;
+  }
+
+  /// 获取单词的复习历史
+  ///
+  /// [wordId] - 单词 ID
+  /// [dictName] - 词典名称
+  /// [limit] - 返回的最大记录数，默认 100
+  ///
+  /// 返回按时间倒序排列的复习日志列表
+  Future<List<ReviewLogEntry>> getReviewHistory(
+    int wordId,
+    String dictName, {
+    int limit = 100,
+  }) async {
+    final db = await database;
+
+    final results = await db.query(
+      'review_logs',
+      where: 'word_id = ? AND dict_name = ?',
+      whereArgs: [wordId, dictName],
+      orderBy: 'review_datetime DESC',
+      limit: limit,
+    );
+
+    return results.map((row) => ReviewLogEntry.fromMap(row)).toList();
+  }
+
+  /// 获取指定时间范围内的复习日志
+  ///
+  /// [dictName] - 词典名称
+  /// [startDate] - 开始日期
+  /// [endDate] - 结束日期
+  ///
+  /// 返回按时间升序排列的复习日志列表
+  ///
+  /// _Requirements: 9.4_
+  Future<List<ReviewLogEntry>> getReviewLogsByDateRange(
+    String dictName,
+    DateTime startDate,
+    DateTime endDate,
+  ) async {
+    final db = await database;
+
+    final results = await db.query(
+      'review_logs',
+      where: 'dict_name = ? AND review_datetime >= ? AND review_datetime <= ?',
+      whereArgs: [
+        dictName,
+        startDate.toIso8601String(),
+        endDate.toIso8601String(),
+      ],
+      orderBy: 'review_datetime ASC',
+    );
+
+    return results.map((row) => ReviewLogEntry.fromMap(row)).toList();
+  }
+
+  /// 导出所有复习日志
+  ///
+  /// 用于 FSRS 参数优化。返回所有复习日志的 Map 列表。
+  ///
+  /// [dictName] - 词典名称（可选，为空则导出所有词典）
+  ///
+  /// _Requirements: 9.4_
+  Future<List<Map<String, dynamic>>> exportReviewLogs({
+    String? dictName,
+  }) async {
+    final db = await database;
+
+    if (dictName != null) {
+      return await db.query(
+        'review_logs',
+        where: 'dict_name = ?',
+        whereArgs: [dictName],
+        orderBy: 'review_datetime ASC',
+      );
+    } else {
+      return await db.query('review_logs', orderBy: 'review_datetime ASC');
+    }
+  }
+
+  /// 获取复习日志统计
+  ///
+  /// [dictName] - 词典名称
+  ///
+  /// 返回统计信息：总复习次数、各评分次数等
+  Future<Map<String, int>> getReviewLogStats(String dictName) async {
+    final db = await database;
+
+    // 总复习次数
+    final totalResult = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM review_logs WHERE dict_name = ?',
+      [dictName],
+    );
+    final total = totalResult.first['count'] as int? ?? 0;
+
+    // 各评分次数
+    final ratingStats = <String, int>{'total': total};
+
+    for (int i = 1; i <= 4; i++) {
+      final result = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM review_logs WHERE dict_name = ? AND rating = ?',
+        [dictName, i],
+      );
+      ratingStats['rating_$i'] = result.first['count'] as int? ?? 0;
+    }
+
+    return ratingStats;
   }
 
   // ==================== 用户设置 ====================
@@ -170,6 +749,13 @@ class DBHelper {
   }
 
   /// 获取词典学习进度
+  ///
+  /// 使用 FSRS 数据结构计算学习统计：
+  /// - 已学习: 有 FSRS 数据的记录（due IS NOT NULL）
+  /// - 今日新词: 首次复习日期 = 今天 (last_review 字段，且 reps = 1)
+  /// - 待复习: due <= now AND state in (2=Review, 3=Relearning)
+  ///
+  /// _Requirements: 7.1, 7.2, 7.3, 7.4_
   Future<DictProgress> getDictProgress(String dictName) async {
     final db = await database;
 
@@ -185,11 +771,13 @@ class DBHelper {
     );
     final totalCount = countResult.first['total'] as int;
 
-    // 从 user_study_progress 表统计已学习的单词数
+    // FSRS 统计：已学习 = 有 FSRS 数据的记录（due IS NOT NULL AND due != ''）
+    // 这表示该单词已经被复习过至少一次
+    // _Requirements: 7.1_
     final learnedResult = await db.rawQuery(
       '''
       SELECT COUNT(*) as count FROM user_study_progress
-      WHERE dict_name = ? AND state >= 1
+      WHERE dict_name = ? AND due IS NOT NULL AND due != ''
     ''',
       [dictName],
     );
@@ -197,6 +785,7 @@ class DBHelper {
 
     // 获取今日进度日期标志
     final today = DateTime.now().toIso8601String().substring(0, 10);
+    final nowUtc = DateTime.now().toUtc().toIso8601String();
 
     // 1. 先获取学习设置（为了后续计算动态分母）
     final progressResult = await db.query(
@@ -248,7 +837,7 @@ class DBHelper {
       ''',
         [sessionId],
       );
-      reviewCount = queueReviewResult.first['count'] as int? ?? 0;
+      final queueReviewCount = queueReviewResult.first['count'] as int? ?? 0;
 
       // 已复习 = 队列中已完成的复习任务数量
       final queueReviewedResult = await db.rawQuery(
@@ -259,27 +848,53 @@ class DBHelper {
         [sessionId],
       );
       reviewedCount = queueReviewedResult.first['count'] as int? ?? 0;
+
+      // 额外检查：是否有新到期的复习词（不在当前队列中）
+      // 这些是在会话创建后到期的单词
+      final additionalDueResult = await db.rawQuery(
+        '''
+        SELECT COUNT(*) as count FROM user_study_progress usp
+        WHERE usp.dict_name = ?
+          AND usp.due IS NOT NULL AND usp.due != ''
+          AND usp.due <= ?
+          AND usp.word_id NOT IN (
+            SELECT word_id FROM study_session_queue WHERE session_id = ?
+          )
+      ''',
+        [dictName, nowUtc, sessionId],
+      );
+      final additionalDueCount =
+          additionalDueResult.first['count'] as int? ?? 0;
+
+      reviewCount = queueReviewCount + additionalDueCount;
       reviewTotal = reviewCount + reviewedCount;
     } else {
-      // 无今日会话：从 user_study_progress 表统计
-      // 今日新词 = 今日首次学习的单词数量
+      // 无今日会话：从 user_study_progress 表统计（使用 FSRS 字段）
+
+      // FSRS 统计：今日新词 = 今天首次学习的单词
+      // 使用 last_review 字段判断，且 reps = 1 表示是首次复习
+      // _Requirements: 7.2_
       final todayStatsResult = await db.rawQuery(
         '''
         SELECT COUNT(*) as count
         FROM user_study_progress
-        WHERE dict_name = ? AND DATE(last_modified) = ?
+        WHERE dict_name = ? AND DATE(last_review) = ? AND reps = 1
       ''',
         [dictName, today],
       );
       todayNewCount = (todayStatsResult.first['count'] as int?) ?? 0;
 
-      // 待复习 = user_study_progress 表中到期的复习词
+      // FSRS 统计：待复习 = due <= now（所有到期的卡片）
+      // 包括 Learning, Review, Relearning 状态的卡片
+      // _Requirements: 7.3_
       final progressReviewResult = await db.rawQuery(
         '''
         SELECT COUNT(*) as count FROM user_study_progress
-        WHERE dict_name = ? AND DATE(next_review_date) <= ? AND state = 1
+        WHERE dict_name = ? 
+          AND due IS NOT NULL AND due != ''
+          AND due <= ?
       ''',
-        [dictName, today],
+        [dictName, nowUtc],
       );
       reviewCount = progressReviewResult.first['count'] as int? ?? 0;
       reviewTotal = reviewCount;
@@ -287,7 +902,7 @@ class DBHelper {
     }
 
     print(
-      'DEBUG getDictProgress: 词典=$dictName, 总词数=$totalCount, 已学=$learnedCount, 今日新词=$todayNewCount, 待复习=$reviewCount, 已复习=$reviewedCount',
+      'DEBUG getDictProgress (FSRS): 词典=$dictName, 总词数=$totalCount, 已学=$learnedCount, 今日新词=$todayNewCount, 待复习=$reviewCount, 已复习=$reviewedCount',
     );
 
     return DictProgress(
@@ -426,9 +1041,17 @@ class DBHelper {
     return results.map((row) => row['word'] as String).toList();
   }
 
-  // ==================== SM-2 算法相关方法 ====================
+  // ==================== SM-2 算法相关方法（已废弃） ====================
 
   /// 获取今日需要复习的单词
+  ///
+  /// 此方法已废弃，请使用 [getDueCards] 替代。
+  /// FSRS 算法提供更精准的复习调度。
+  ///
+  /// _Requirements: 3.1_
+  @Deprecated(
+    'Use getDueCards instead. SM-2 algorithm has been replaced by FSRS.',
+  )
   Future<List<WordProgress>> getReviewWords(
     String dictName, {
     int limit = 10,
@@ -455,18 +1078,19 @@ class DBHelper {
         .toList();
   }
 
-  /// 获取今日学习队列（新词 + 复习词穿插）
-  Future<List<WordProgress>> getTodayStudyQueue(
+  /// 获取今日学习队列（新词 + 复习词穿插）- FSRS 版本
+  ///
+  /// 使用 FSRS 算法获取待复习卡片，并与新词穿插组成学习队列。
+  ///
+  /// _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
+  Future<List<WordCard>> getTodayStudyQueue(
     String dictName,
     StudySettings settings,
   ) async {
     final db = await database;
 
-    // 1. 获取需要复习的单词 (获取所有到期的，甚至更多)
-    final reviewWords = await getReviewWords(
-      dictName,
-      limit: 1000, // 设定一个足够大的上限，确保包含所有复习词
-    );
+    // 1. 获取需要复习的 FSRS 卡片 (获取所有到期的)
+    final reviewCards = await getDueCards(dictName, limit: 1000);
 
     // 2. 获取新单词 (固定数量，由设置决定)
     String orderBy;
@@ -497,75 +1121,44 @@ class DBHelper {
       [dictName, dictName, dictName, newWordsLimit],
     );
 
-    final newWords = newWordResults
-        .map((row) => WordProgress.fromMap(row))
-        .toList();
+    // 将新词转换为 WordCard（初始化为新卡片）
+    final newCards = newWordResults.map((row) {
+      return WordCard(
+        wordId: row['word_id'] as int,
+        word: row['word'] as String,
+        dictName: row['dict_name'] as String,
+        // 使用默认的 FSRS Card（新卡片状态）
+      );
+    }).toList();
 
-    // 3. 穿插合并：策略是优先保证新词展示，同时穿插复习
-    // 比如：每 2 个新词穿插 1 个复习词，或者如果复习词很多，就均匀分布
-    final List<WordProgress> queue = [];
+    // 3. 穿插合并：策略是 2(New):1(Review) 穿插，直到一方耗尽
+    final List<WordCard> queue = [];
     int newIndex = 0;
     int reviewIndex = 0;
 
-    // 简单的穿插逻辑：只要还有词就处理
-    while (newIndex < newWords.length || reviewIndex < reviewWords.length) {
-      // 这里的策略可以调整，目前保留 每3个新词后插入1个复习词 的节奏，
-      // 但如果新词没了，就全是复习词；复习词没了，就全是新词。
-      // 为了让复习更及时出现，改为 2:1 或者 1:1 可能更好？
-      // 鉴于用户反馈需要明确的进度，我们保持一定的穿插。
-
-      // 如果还有新词
-      if (newIndex < newWords.length) {
-        queue.add(newWords[newIndex++]);
-        // 连续加最多2个新词后，尝试加一个复习词
-        if (newIndex < newWords.length && newIndex % 2 == 0) {
-          if (reviewIndex < reviewWords.length) {
-            queue.add(reviewWords[reviewIndex++]);
-          }
-        }
-      } else {
-        // 新词学完了，把剩下的复习词都加上
-        if (reviewIndex < reviewWords.length) {
-          queue.add(reviewWords[reviewIndex++]);
-        }
-      }
-
-      // 还没处理完新词，且复习词堆积比较多时，强制穿插
-      if (newIndex < newWords.length && reviewIndex < reviewWords.length) {
-        // 如果复习词数量远大于新词，增加复习词出现频率
-        // 简单起见，这里保证至少这一轮循环末尾会检查是否加复习词
-        // 上面的逻辑已经涵盖了基本的穿插
-      }
-    }
-
-    // 考虑到上述循环逻辑有点复杂，简化为标准 2(New):1(Review) 穿插，直到一方耗尽
-    queue.clear();
-    newIndex = 0;
-    reviewIndex = 0;
-
-    while (newIndex < newWords.length || reviewIndex < reviewWords.length) {
+    while (newIndex < newCards.length || reviewIndex < reviewCards.length) {
       // 添加最多2个新词
       int addedNew = 0;
-      while (newIndex < newWords.length && addedNew < 2) {
-        queue.add(newWords[newIndex++]);
+      while (newIndex < newCards.length && addedNew < 2) {
+        queue.add(newCards[newIndex++]);
         addedNew++;
       }
 
       // 添加1个复习词
-      if (reviewIndex < reviewWords.length) {
-        queue.add(reviewWords[reviewIndex++]);
+      if (reviewIndex < reviewCards.length) {
+        queue.add(reviewCards[reviewIndex++]);
       }
 
       // 如果新词没了，剩下复习词全部加上
-      if (newIndex >= newWords.length) {
-        while (reviewIndex < reviewWords.length) {
-          queue.add(reviewWords[reviewIndex++]);
+      if (newIndex >= newCards.length) {
+        while (reviewIndex < reviewCards.length) {
+          queue.add(reviewCards[reviewIndex++]);
         }
       }
       // 如果复习词没了，剩下新词全部加上
-      else if (reviewIndex >= reviewWords.length) {
-        while (newIndex < newWords.length) {
-          queue.add(newWords[newIndex++]);
+      else if (reviewIndex >= reviewCards.length) {
+        while (newIndex < newCards.length) {
+          queue.add(newCards[newIndex++]);
         }
       }
     }
@@ -584,6 +1177,14 @@ class DBHelper {
   }
 
   /// 更新单词学习进度 (SM-2 算法)
+  ///
+  /// 此方法已废弃，请使用 [saveWordCard] 替代。
+  /// FSRS 算法提供更精准的记忆预测能力。
+  ///
+  /// _Requirements: 3.1_
+  @Deprecated(
+    'Use saveWordCard instead. SM-2 algorithm has been replaced by FSRS.',
+  )
   Future<void> updateWordProgress(WordProgress progress) async {
     final db = await database;
     await db.insert(
@@ -594,6 +1195,14 @@ class DBHelper {
   }
 
   /// 获取单词的学习进度
+  ///
+  /// 此方法已废弃，请使用 [getWordCard] 替代。
+  /// FSRS 算法提供更精准的记忆预测能力。
+  ///
+  /// _Requirements: 3.1_
+  @Deprecated(
+    'Use getWordCard instead. SM-2 algorithm has been replaced by FSRS.',
+  )
   Future<WordProgress?> getWordProgress(int wordId, String dictName) async {
     final db = await database;
     final results = await db.rawQuery(
@@ -645,7 +1254,12 @@ class DBHelper {
         : TodaySessionStatus.inProgress;
   }
 
-  /// 获取或创建今日学习会话
+  /// 获取或创建今日学习会话 - FSRS 版本
+  ///
+  /// 使用 WordCard 替代 WordProgress，支持 FSRS 算法。
+  /// 当会话恢复时，会重新计算所有卡片的 isDue 状态。
+  ///
+  /// _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
   Future<StudySession?> getOrCreateTodaySession(
     String dictName,
     StudySettings settings,
@@ -663,15 +1277,15 @@ class DBHelper {
     if (existingSession.isNotEmpty) {
       final sessionId = existingSession.first['id'] as int;
       int currentIndex = existingSession.first['current_index'] as int;
-      final queue = await _getSessionQueue(sessionId);
+      final queue = await _getSessionQueue(sessionId, dictName);
 
       print(
         'DEBUG getOrCreateTodaySession: 恢复会话 $sessionId, 当前队列长度: ${queue.length}',
       );
 
       // A. 动态追加待复习单词：确保所有到期的复习词都在队列中
-      // 从 user_study_progress 表获取所有到期的复习词（state=1, next_review_date <= today）
-      final currentDueWords = await getReviewWords(dictName, limit: 100);
+      // 使用 FSRS getDueCards 获取所有到期的复习词
+      final currentDueCards = await getDueCards(dictName, limit: 100);
       final wordIdsInQueue = queue.map((w) => w.wordId).toSet();
 
       int nextIdx = 0;
@@ -684,16 +1298,16 @@ class DBHelper {
       }
 
       int addedReviewCount = 0;
-      for (var word in currentDueWords) {
-        if (!wordIdsInQueue.contains(word.wordId)) {
+      for (var card in currentDueCards) {
+        if (!wordIdsInQueue.contains(card.wordId)) {
           await db.insert('study_session_queue', {
             'session_id': sessionId,
-            'word_id': word.wordId,
+            'word_id': card.wordId,
             'queue_index': nextIdx++,
             'is_review': 1,
             'is_done': 0,
           });
-          queue.add(word);
+          queue.add(card);
           addedReviewCount++;
         }
       }
@@ -708,7 +1322,7 @@ class DBHelper {
       if (currentNewCount < settings.dailyWords) {
         int wordsToFill = settings.dailyWords - currentNewCount;
         for (int i = 0; i < wordsToFill; i++) {
-          final nextNew = await getNextNewWord(dictName, settings, queue);
+          final nextNew = await getNextNewWordCard(dictName, settings, queue);
           if (nextNew == null) break;
 
           await db.insert('study_session_queue', {
@@ -800,13 +1414,23 @@ class DBHelper {
     );
   }
 
-  /// 获取会话队列
-  Future<List<WordProgress>> _getSessionQueue(int sessionId) async {
+  /// 获取会话队列 - FSRS 版本
+  ///
+  /// 返回 WordCard 列表，支持 FSRS 算法。
+  /// 当会话恢复时，会重新计算所有卡片的 isDue 状态。
+  ///
+  /// _Requirements: 10.1, 10.2_
+  Future<List<WordCard>> _getSessionQueue(
+    int sessionId,
+    String dictName,
+  ) async {
     final db = await database;
     final results = await db.rawQuery(
       '''
-      SELECT ssq.*, w.word, usp.ease_factor, usp.interval, usp.repetition,
-             usp.next_review_date, usp.state, usp.last_modified,
+      SELECT ssq.*, w.word, 
+             usp.due, usp.stability, usp.difficulty,
+             usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
+             usp.state, usp.last_review,
              ssq.is_review as is_review_flag
       FROM study_session_queue ssq
       JOIN words w ON ssq.word_id = w.id
@@ -819,22 +1443,38 @@ class DBHelper {
     );
 
     return results.map((row) {
-      return WordProgress(
-        wordId: row['word_id'] as int,
-        word: row['word'] as String,
-        dictName: '', // 会从 session 获取
-        easeFactor: (row['ease_factor'] as num?)?.toDouble() ?? 2.5,
-        interval: row['interval'] as int? ?? 0,
-        repetition: row['repetition'] as int? ?? 0,
-        nextReviewDate: row['next_review_date'] != null
-            ? DateTime.parse(row['next_review_date'] as String)
-            : null,
-        state: WordState.values[row['state'] as int? ?? 0],
-        lastModified: row['last_modified'] != null
-            ? DateTime.parse(row['last_modified'] as String)
-            : null,
-        isReview: (row['is_review_flag'] as int? ?? 0) == 1,
-      );
+      final wordId = row['word_id'] as int;
+      final word = row['word'] as String;
+
+      // 检查是否有 FSRS 数据
+      final hasFsrsData =
+          row['due'] != null && (row['due'] as String).isNotEmpty;
+
+      if (hasFsrsData) {
+        // 有 FSRS 数据，从数据库构建 WordCard
+        return WordCard.fromMap({
+          'word_id': wordId,
+          'word': word,
+          'dict_name': dictName,
+          'due': row['due'] as String,
+          'stability': row['stability'] as num? ?? 0.0,
+          'difficulty': row['difficulty'] as num? ?? 5.0,
+          'elapsed_days': row['elapsed_days'] as int? ?? 0,
+          'scheduled_days': row['scheduled_days'] as int? ?? 0,
+          'reps': row['reps'] as int? ?? 0,
+          'lapses': row['lapses'] as int? ?? 0,
+          'state': row['state'] as int? ?? 0,
+          'last_review': row['last_review'] as String?,
+        });
+      } else {
+        // 没有 FSRS 数据，创建新卡片
+        return WordCard(
+          wordId: wordId,
+          word: word,
+          dictName: dictName,
+          // 使用默认的 FSRS Card（新卡片状态）
+        );
+      }
     }).toList();
   }
 
@@ -944,6 +1584,14 @@ class DBHelper {
   }
 
   /// 获取下一个新词（用于补充队列）
+  ///
+  /// 此方法已废弃，请使用 [getNextNewWordCard] 替代。
+  /// FSRS 算法提供更精准的记忆预测能力。
+  ///
+  /// _Requirements: 3.1_
+  @Deprecated(
+    'Use getNextNewWordCard instead. SM-2 algorithm has been replaced by FSRS.',
+  )
   Future<WordProgress?> getNextNewWord(
     String dictName,
     StudySettings settings,
@@ -990,6 +1638,64 @@ class DBHelper {
     return WordProgress.fromMap(results.first);
   }
 
+  /// 获取下一个新词（用于补充队列）- FSRS 版本
+  ///
+  /// 返回 WordCard 对象，用于 FSRS 会话队列。
+  ///
+  /// _Requirements: 10.3_
+  Future<WordCard?> getNextNewWordCard(
+    String dictName,
+    StudySettings settings,
+    List<WordCard> currentQueue,
+  ) async {
+    final db = await database;
+
+    // 获取当前队列中的所有 word_id
+    final existingIds = currentQueue.map((w) => w.wordId).toList();
+    final placeholders = existingIds.isNotEmpty
+        ? existingIds.map((_) => '?').join(',')
+        : '0';
+
+    String orderBy;
+    switch (settings.mode) {
+      case StudyMode.sequential:
+        orderBy = 'w.id ASC';
+        break;
+      case StudyMode.byDifficulty:
+        orderBy = 'w.difficulty DESC, w.id ASC';
+        break;
+      case StudyMode.random:
+        orderBy = 'RANDOM()';
+        break;
+    }
+
+    final results = await db.rawQuery(
+      '''
+      SELECT w.id as word_id, w.word, ? as dict_name
+      FROM words w
+      JOIN word_dict_rel rel ON w.id = rel.word_id
+      JOIN dictionaries d ON rel.dict_id = d.id
+      LEFT JOIN user_study_progress usp ON w.id = usp.word_id AND usp.dict_name = ?
+      WHERE d.name = ? 
+        AND usp.word_id IS NULL
+        AND w.id NOT IN ($placeholders)
+      ORDER BY $orderBy
+      LIMIT 1
+    ''',
+      [dictName, dictName, dictName, ...existingIds],
+    );
+
+    if (results.isEmpty) return null;
+
+    // 创建新的 WordCard（新卡片状态）
+    return WordCard(
+      wordId: results.first['word_id'] as int,
+      word: results.first['word'] as String,
+      dictName: results.first['dict_name'] as String,
+      // 使用默认的 FSRS Card（新卡片状态）
+    );
+  }
+
   /// 移除会话队列中的最后一个单词（用于撤销时）
   Future<void> removeLastWordFromSessionQueue(int sessionId) async {
     final db = await database;
@@ -1020,27 +1726,6 @@ class DBHelper {
       whereArgs: [sessionId, queueIndex],
     );
   }
-}
-
-/// 学习会话模型
-class StudySession {
-  final int id;
-  final String dictName;
-  final String sessionDate;
-  final int currentIndex;
-  final List<WordProgress> queue;
-
-  StudySession({
-    required this.id,
-    required this.dictName,
-    required this.sessionDate,
-    required this.currentIndex,
-    required this.queue,
-  });
-
-  int get newWordsCount => queue.where((w) => !w.isReview).length;
-  int get reviewWordsCount => queue.where((w) => w.isReview).length;
-  bool get isCompleted => currentIndex >= queue.length;
 }
 
 /// 今日学习状态
