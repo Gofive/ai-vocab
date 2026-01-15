@@ -122,11 +122,41 @@ class _StudyStatsPage extends StatefulWidget {
 class _StudyStatsPageState extends State<_StudyStatsPage> {
   TodaySessionStatus _sessionStatus = TodaySessionStatus.noSession;
   bool _loading = true;
+  int _streakDays = 0;
+  List<DateTime> _weekDates = [];
+  Set<DateTime> _studiedDates = {};
 
   @override
   void initState() {
     super.initState();
+    _initWeekDates();
     _loadSessionStatus();
+    _loadStreakData();
+  }
+
+  void _initWeekDates() {
+    final now = DateTime.now();
+    final weekday = now.weekday; // 1=周一, 7=周日
+    final monday = now.subtract(Duration(days: weekday - 1));
+    _weekDates = List.generate(
+      7,
+      (i) => DateTime(monday.year, monday.month, monday.day + i),
+    );
+  }
+
+  Future<void> _loadStreakData() async {
+    final db = DBHelper();
+    final streak = await db.getStudyStreak();
+    final studiedDates = await db.getStudiedDatesInRange(
+      _weekDates.first,
+      _weekDates.last,
+    );
+    if (mounted) {
+      setState(() {
+        _streakDays = streak;
+        _studiedDates = studiedDates;
+      });
+    }
   }
 
   @override
@@ -152,7 +182,6 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
   @override
   Widget build(BuildContext context) {
     final primaryColor = Theme.of(context).colorScheme.primary;
-    final percentage = (widget.progress.progress * 100).toInt();
 
     return Scaffold(
       backgroundColor: context.backgroundColor,
@@ -162,202 +191,129 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
             // 可滚动内容区
             Expanded(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // 标题
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '学习',
-                                style: TextStyle(
-                                  fontSize: 28,
-                                  fontWeight: FontWeight.bold,
-                                  color: context.textPrimary,
-                                ),
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                widget.dictName,
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  color: context.textSecondary,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        // 进度圆环
-                        _buildMiniProgress(primaryColor, percentage),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
+                    // Header - 词典信息
+                    _buildHeader(context, primaryColor),
+                    const SizedBox(height: 32),
 
-                    // 今日任务卡片（简化版）
-                    _buildTodayTaskCard(context, primaryColor),
+                    // 连续打卡组件
+                    _buildStreakCard(context, primaryColor),
                     const SizedBox(height: 16),
 
-                    // 统计数据（2x2 网格）
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildStatCard(
-                            context,
-                            '已学',
-                            '${widget.progress.learnedCount}',
-                            Icons.check_circle_outline,
-                            Colors.teal,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _buildStatCard(
-                            context,
-                            '剩余',
-                            '${widget.progress.totalCount - widget.progress.learnedCount}',
-                            Icons.pending_outlined,
-                            Colors.blue,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: _buildStatCard(
-                            context,
-                            '待复习',
-                            '${widget.progress.todayReviewCount}',
-                            Icons.replay_rounded,
-                            Colors.orange,
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: _buildStatCard(
-                            context,
-                            '每日目标',
-                            '${widget.progress.settings.dailyWords}',
-                            Icons.flag_outlined,
-                            primaryColor,
-                          ),
-                        ),
-                      ],
-                    ),
+                    // 今日任务卡片
+                    _buildTaskCards(context, primaryColor),
+                    const SizedBox(height: 16),
+
+                    // 词库总进度
+                    _buildTotalProgress(context, primaryColor),
                   ],
                 ),
               ),
             ),
 
             // 底部固定按钮区域
-            if (!_loading) _buildBottomAction(context, primaryColor),
+            if (!_loading)
+              Container(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                decoration: BoxDecoration(
+                  color: context.backgroundColor,
+                  border: Border(
+                    top: BorderSide(color: context.dividerColor, width: 0.5),
+                  ),
+                ),
+                child: _buildStartButton(
+                  context,
+                  primaryColor,
+                  _sessionStatus == TodaySessionStatus.inProgress
+                      ? '继续学习'
+                      : '开始学习',
+                ),
+              ),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildMiniProgress(Color primaryColor, int percentage) {
-    return Container(
-      width: 72,
-      height: 72,
-      decoration: BoxDecoration(
-        color: primaryColor.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          SizedBox(
-            width: 52,
-            height: 52,
-            child: CircularProgressIndicator(
-              value: widget.progress.progress,
-              strokeWidth: 5,
-              backgroundColor: primaryColor.withValues(alpha: 0.2),
-              valueColor: AlwaysStoppedAnimation(primaryColor),
-            ),
-          ),
-          Text(
-            '$percentage%',
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              color: primaryColor,
-            ),
-          ),
-        ],
-      ),
-    );
+  int _estimateStudyTime() {
+    final newWords =
+        widget.progress.settings.dailyWords - widget.progress.todayNewCount;
+    final reviewWords = widget.progress.todayReviewCount;
+    // 假设每个新词1分钟，复习词0.5分钟
+    return ((newWords * 1 + reviewWords * 0.5).ceil()).clamp(1, 60);
   }
 
-  Widget _buildBottomAction(BuildContext context, Color primaryColor) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-      decoration: BoxDecoration(
-        color: context.surfaceColor,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, -4),
-          ),
-        ],
-      ),
-      child: _buildActionArea(context, primaryColor),
-    );
-  }
-
-  Widget _buildActionArea(BuildContext context, Color primaryColor) {
-    switch (_sessionStatus) {
-      case TodaySessionStatus.completed:
-        return _buildCompletedCard(context);
-      case TodaySessionStatus.inProgress:
-        return _buildStartButton(context, primaryColor, '继续背诵');
-      case TodaySessionStatus.noSession:
-        return _buildStartButton(context, primaryColor, '开始背诵');
-    }
-  }
-
-  Widget _buildCompletedCard(BuildContext context) {
+  Widget _buildHeader(BuildContext context, Color primaryColor) {
     return Row(
       children: [
-        Icon(Icons.check_circle, size: 24, color: Colors.teal[400]),
+        // 词典图标
+        Container(
+          width: 44,
+          height: 44,
+          decoration: BoxDecoration(
+            color: primaryColor.withValues(alpha: 0.15),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(Icons.menu_book_rounded, color: primaryColor, size: 22),
+        ),
         const SizedBox(width: 12),
+        // 词典名称
         Expanded(
-          child: Text(
-            '今日学习已完成，明天继续加油！',
-            style: TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w500,
-              color: Colors.teal[700],
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '正在学习',
+                style: TextStyle(fontSize: 11, color: context.textSecondary),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                widget.dictName,
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: context.textPrimary,
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+        // 切换按钮
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            color: context.surfaceColor,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: context.dividerColor),
+          ),
+          child: Icon(
+            Icons.swap_horiz_rounded,
+            color: context.textSecondary,
+            size: 18,
           ),
         ),
       ],
     );
   }
 
-  Widget _buildTodayTaskCard(BuildContext context, Color primaryColor) {
-    // 数据来源：widget.progress (DictProgress) - 由 getDictProgress 方法统一计算
-    // 数据同源策略：
-    // - 有今日会话时：从队列统计（新词=已完成的非复习词，待复习=未完成的复习任务）
-    // - 无今日会话时：从 user_study_progress 表统计
-    final learnedNewToday = widget.progress.todayNewCount;
+  Widget _buildTaskCards(BuildContext context, Color primaryColor) {
     final newWordsGoal = widget.progress.settings.dailyWords;
-    final remainingReview = widget.progress.todayReviewCount;
+    final learnedNew = widget.progress.todayNewCount;
+    final reviewedCount = widget.progress.todayReviewedCount;
+    final reviewTotal = widget.progress.todayReviewTotal;
+    final estimatedTime = _estimateStudyTime();
 
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: context.surfaceColor,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: context.dividerColor),
       ),
       child: Column(
@@ -365,38 +321,41 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
         children: [
           Row(
             children: [
-              Icon(Icons.today_rounded, color: primaryColor, size: 22),
-              const SizedBox(width: 8),
               Text(
-                '今日进度',
+                '今日任务',
                 style: TextStyle(
-                  fontSize: 16,
+                  fontSize: 13,
                   fontWeight: FontWeight.w600,
                   color: context.textPrimary,
                 ),
               ),
+              const Spacer(),
+              Icon(Icons.schedule, size: 14, color: context.textSecondary),
+              const SizedBox(width: 4),
+              Text(
+                '约 $estimatedTime 分钟',
+                style: TextStyle(fontSize: 11, color: context.textSecondary),
+              ),
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
                 child: _buildTaskItem(
                   context,
-                  '今日新词',
-                  '$learnedNewToday / $newWordsGoal',
+                  '新词学习',
+                  '$learnedNew/$newWordsGoal',
                   primaryColor,
-                  isCompleted: learnedNewToday >= newWordsGoal,
                 ),
               ),
               Container(width: 1, height: 40, color: context.dividerColor),
               Expanded(
                 child: _buildTaskItem(
                   context,
-                  '剩余复习',
-                  '$remainingReview 个',
+                  '复习巩固',
+                  '$reviewedCount/$reviewTotal',
                   Colors.orange,
-                  isCompleted: remainingReview == 0,
                 ),
               ),
             ],
@@ -410,32 +369,17 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
     BuildContext context,
     String label,
     String value,
-    Color color, {
-    bool isCompleted = false,
-  }) {
+    Color color,
+  ) {
     return Column(
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            if (isCompleted)
-              Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: Icon(
-                  Icons.check_circle,
-                  size: 16,
-                  color: Colors.teal[400],
-                ),
-              ),
-            Text(
-              value,
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: isCompleted ? Colors.teal[400] : color,
-              ),
-            ),
-          ],
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 22,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
         ),
         const SizedBox(height: 4),
         Text(
@@ -446,52 +390,172 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
     );
   }
 
-  Widget _buildStatCard(
-    BuildContext context,
-    String label,
-    String value,
-    IconData icon,
-    Color color,
-  ) {
+  /// 词库总进度
+  Widget _buildTotalProgress(BuildContext context, Color primaryColor) {
+    final learned = widget.progress.learnedCount;
+    final total = widget.progress.totalCount;
+    final progress = total > 0 ? learned / total : 0.0;
+    final percentage = (progress * 100).toInt();
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: context.surfaceColor,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(color: context.dividerColor),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, color: color, size: 18),
-          ),
-          const SizedBox(width: 10),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+          Row(
             children: [
               Text(
-                value,
+                '词库进度',
                 style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
                   color: context.textPrimary,
                 ),
               ),
+              const Spacer(),
               Text(
-                label,
-                style: TextStyle(fontSize: 11, color: context.textSecondary),
+                '$learned / $total',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: primaryColor,
+                ),
               ),
             ],
+          ),
+          const SizedBox(height: 10),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: progress,
+              minHeight: 8,
+              backgroundColor: context.dividerColor,
+              valueColor: AlwaysStoppedAnimation(primaryColor),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '已掌握 $percentage%',
+            style: TextStyle(fontSize: 11, color: context.textSecondary),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildStreakCard(BuildContext context, Color primaryColor) {
+    final now = DateTime.now();
+    final weekdays = ['一', '二', '三', '四', '五', '六', '日'];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: context.surfaceColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: context.dividerColor),
+      ),
+      child: Column(
+        children: [
+          // 标题行
+          Row(
+            children: [
+              const Icon(
+                Icons.local_fire_department,
+                color: Colors.orange,
+                size: 20,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '连续打卡 $_streakDays 天',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: context.textPrimary,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${now.month}月',
+                style: TextStyle(fontSize: 11, color: context.textSecondary),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          // 星期和日期
+          Row(
+            children: _weekDates.asMap().entries.map((entry) {
+              final index = entry.key;
+              final date = entry.value;
+              final isToday = _isSameDay(date, now);
+              final isStudied = _studiedDates.any((d) => _isSameDay(d, date));
+              final isFuture = date.isAfter(now);
+
+              return Expanded(
+                child: Column(
+                  children: [
+                    // 星期
+                    Text(
+                      weekdays[index],
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: context.textSecondary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // 日期圆点
+                    Container(
+                      width: 32,
+                      height: 32,
+                      decoration: BoxDecoration(
+                        color: isStudied ? primaryColor : Colors.transparent,
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Center(
+                        child: Text(
+                          '${date.day}',
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: isStudied
+                                ? FontWeight.bold
+                                : FontWeight.normal,
+                            color: isStudied
+                                ? Colors.white
+                                : (isFuture
+                                      ? context.textSecondary.withValues(
+                                          alpha: 0.4,
+                                        )
+                                      : context.textPrimary),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    // 当前日期小点指示器
+                    Container(
+                      width: 5,
+                      height: 5,
+                      decoration: BoxDecoration(
+                        color: isToday ? primaryColor : Colors.transparent,
+                        borderRadius: BorderRadius.circular(3),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 
   Widget _buildStartButton(
@@ -499,9 +563,36 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
     Color primaryColor,
     String label,
   ) {
+    // 如果今日已完成，显示完成状态
+    if (_sessionStatus == TodaySessionStatus.completed) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        decoration: BoxDecoration(
+          color: Colors.teal.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.check_circle, color: Colors.teal[400], size: 22),
+            const SizedBox(width: 8),
+            Text(
+              '今日学习已完成',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: Colors.teal[400],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return SizedBox(
       width: double.infinity,
-      height: 56,
+      height: 50,
       child: ElevatedButton(
         onPressed: () async {
           await Navigator.push(
@@ -513,6 +604,7 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
                 onComplete: () {
                   widget.onRefresh();
                   _loadSessionStatus();
+                  _loadStreakData();
                 },
               ),
             ),
@@ -520,21 +612,20 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
         },
         style: ElevatedButton.styleFrom(
           backgroundColor: primaryColor,
-          foregroundColor: context.textPrimary,
+          foregroundColor: Colors.white,
           elevation: 0,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(36),
+            borderRadius: BorderRadius.circular(25),
           ),
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
-          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            const Icon(Icons.menu_book, size: 26),
+            const Icon(Icons.menu_book, size: 24),
             const SizedBox(width: 8),
             Text(
               label,
-              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
             ),
           ],
         ),
@@ -831,7 +922,6 @@ class _StudySessionPageState extends State<StudySessionPage> {
         child: Column(
           children: [
             _buildHeader(context),
-            if (currentWord.isReview) _buildReviewBanner(context),
             Expanded(
               child: AnimatedSwitcher(
                 duration: const Duration(milliseconds: 300),
@@ -859,37 +949,6 @@ class _StudySessionPageState extends State<StudySessionPage> {
             if (_showFamiliarityButtons) _buildFamiliarityButtons(context),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildReviewBanner(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.orange.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.replay_rounded, color: Colors.orange, size: 20),
-          const SizedBox(width: 8),
-          Text(
-            '复习单词',
-            style: TextStyle(
-              color: Colors.orange[700],
-              fontWeight: FontWeight.w600,
-              fontSize: 14,
-            ),
-          ),
-          const Spacer(),
-          Text(
-            '巩固记忆',
-            style: TextStyle(color: Colors.orange[600], fontSize: 12),
-          ),
-        ],
       ),
     );
   }
@@ -998,12 +1057,12 @@ class _StudySessionPageState extends State<StudySessionPage> {
     }
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+      padding: const EdgeInsets.fromLTRB(24, 12, 24, 12),
       child: Row(
         children: [
           _buildFamiliarityBtn(
             context,
-            isReview ? '记得' : '记住了',
+            isReview ? '记得' : '太简单',
             Icons.sentiment_satisfied_alt,
             Colors.teal,
             calcNextReview(5),
@@ -1012,7 +1071,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
           const SizedBox(width: 12),
           _buildFamiliarityBtn(
             context,
-            isReview ? '模糊' : '有印象',
+            isReview ? '模糊' : '有困难',
             Icons.sentiment_neutral,
             Colors.orange,
             calcNextReview(3),
@@ -1021,7 +1080,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
           const SizedBox(width: 12),
           _buildFamiliarityBtn(
             context,
-            isReview ? '忘了' : '没记住',
+            isReview ? '忘了' : '不认识',
             Icons.sentiment_dissatisfied,
             context.textSecondary,
             calcNextReview(1),
@@ -1158,7 +1217,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
       child: GestureDetector(
         onTap: onTap,
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 12),
+          padding: const EdgeInsets.symmetric(vertical: 8),
           decoration: BoxDecoration(
             color: context.surfaceColor,
             borderRadius: BorderRadius.circular(16),
@@ -1170,16 +1229,23 @@ class _StudySessionPageState extends State<StudySessionPage> {
                 label,
                 style: TextStyle(
                   fontSize: 14,
-                  fontWeight: FontWeight.w500,
+                  fontWeight: FontWeight.w600,
                   color: context.textPrimary,
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 6),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(icon, color: color, size: 24),
-                  const SizedBox(width: 4),
+                  Text(
+                    '下次',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: color,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
                   Text(
                     nextReview,
                     style: TextStyle(
@@ -1487,94 +1553,149 @@ class _WordCardPageState extends State<_WordCardPage>
 
   Widget _buildDetailView() {
     final word = _word!;
-    return SingleChildScrollView(
+    final accentColor = widget.isReview ? Colors.orange : widget.primaryColor;
+
+    return Padding(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 20),
       child: Container(
-        padding: const EdgeInsets.all(20),
         decoration: BoxDecoration(
           color: context.surfaceColor,
           borderRadius: BorderRadius.circular(24),
-          boxShadow: context.isDark
-              ? null
-              : [
+          boxShadow: widget.isReview
+              ? [
                   BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 20,
+                    color: Colors.orange.withValues(alpha: 0.25),
+                    blurRadius: 16,
+                    spreadRadius: 0,
                     offset: const Offset(0, 4),
                   ),
-                ],
+                ]
+              : (context.isDark
+                    ? null
+                    : [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.05),
+                          blurRadius: 20,
+                          offset: const Offset(0, 4),
+                        ),
+                      ]),
         ),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+            // 固定的头部：单词和音标
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 复习/新词标签
+                  Row(
                     children: [
-                      Text(
-                        word.word,
-                        style: TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.bold,
-                          color: context.textPrimary,
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: accentColor.withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              widget.isReview
+                                  ? Icons.replay_rounded
+                                  : Icons.auto_stories,
+                              size: 14,
+                              color: accentColor,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              widget.isReview ? '复习' : '新词',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: accentColor,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        word.phonetic,
-                        style: TextStyle(
-                          fontSize: 15,
-                          color: context.textSecondary,
+                      const Spacer(),
+                      GestureDetector(
+                        onTap: () =>
+                            widget.onPlayAudio(word.ttsPath, word: word.word),
+                        child: Icon(
+                          Icons.volume_up_rounded,
+                          size: 26,
+                          color: accentColor,
                         ),
                       ),
                     ],
                   ),
-                ),
-                GestureDetector(
-                  onTap: () =>
-                      widget.onPlayAudio(word.ttsPath, word: word.word),
-                  child: Icon(
-                    Icons.volume_up_rounded,
-                    size: 28,
-                    color: widget.primaryColor,
+                  const SizedBox(height: 12),
+                  Text(
+                    word.word,
+                    style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      color: context.textPrimary,
+                    ),
                   ),
+                  const SizedBox(height: 4),
+                  Text(
+                    word.phonetic,
+                    style: TextStyle(
+                      fontSize: 15,
+                      color: context.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Divider(height: 1, color: context.dividerColor),
+            // 可滚动的内容区域
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildSectionTitle('中文释义', widget.primaryColor),
+                    const SizedBox(height: 8),
+                    Text(
+                      word.definitions.join('；'),
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        height: 1.5,
+                        color: context.textPrimary,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+                    _buildMnemonicCard(word.mnemonic),
+                    const SizedBox(height: 24),
+                    _buildSectionTitle('例句', widget.primaryColor),
+                    const SizedBox(height: 12),
+                    ...word.usageStacks.asMap().entries.map(
+                      (entry) => _buildSentenceItem(entry.value, entry.key + 1),
+                    ),
+                    if (word.allCollocations.isNotEmpty) ...[
+                      const SizedBox(height: 24),
+                      _buildSectionTitle('常用短语', widget.primaryColor),
+                      const SizedBox(height: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: word.allCollocations
+                            .map((p) => _buildPhraseItem(p))
+                            .toList(),
+                      ),
+                    ],
+                  ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 24),
-            _buildSectionTitle('中文释义', widget.primaryColor),
-            const SizedBox(height: 8),
-            Text(
-              word.definitions.join('；'),
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                height: 1.5,
-                color: context.textPrimary,
               ),
             ),
-            const SizedBox(height: 24),
-            _buildMnemonicCard(word.mnemonic),
-            const SizedBox(height: 24),
-            _buildSectionTitle('例句', widget.primaryColor),
-            const SizedBox(height: 12),
-            ...word.usageStacks.asMap().entries.map(
-              (entry) => _buildSentenceItem(entry.value, entry.key + 1),
-            ),
-            if (word.allCollocations.isNotEmpty) ...[
-              const SizedBox(height: 24),
-              _buildSectionTitle('常用短语', widget.primaryColor),
-              const SizedBox(height: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: word.allCollocations
-                    .map((p) => _buildPhraseItem(p))
-                    .toList(),
-              ),
-            ],
           ],
         ),
       ),
@@ -1610,74 +1731,64 @@ class _WordCardPageState extends State<_WordCardPage>
           color: const Color(0xFF6366F1).withValues(alpha: 0.2),
         ),
       ),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              gradient: const LinearGradient(
-                colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-              ),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Icon(
-              Icons.auto_awesome,
-              size: 18,
-              color: Colors.white,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    const Text(
-                      'AI 助记',
-                      style: TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF6366F1),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF6366F1).withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: const Text(
-                        'AI',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF6366F1),
-                        ),
-                      ),
-                    ),
-                  ],
+          Row(
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(8),
                 ),
-                const SizedBox(height: 6),
-                Text(
-                  mnemonic,
+                child: const Icon(
+                  Icons.auto_awesome,
+                  size: 16,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Text(
+                'AI 助记',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: Color(0xFF6366F1),
+                ),
+              ),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6366F1).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Text(
+                  'AI',
                   style: TextStyle(
-                    fontSize: 15,
-                    height: 1.5,
-                    color: context.isDark
-                        ? AppTheme.darkTextSecondary
-                        : const Color(0xFF475569),
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF6366F1),
                   ),
                 ),
-              ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            mnemonic,
+            style: TextStyle(
+              fontSize: 15,
+              height: 1.5,
+              color: context.isDark
+                  ? AppTheme.darkTextSecondary
+                  : const Color(0xFF475569),
             ),
           ),
         ],
@@ -1736,7 +1847,7 @@ class _WordCardPageState extends State<_WordCardPage>
                         padding: const EdgeInsets.only(left: 8),
                         child: Icon(
                           Icons.volume_up_rounded,
-                          size: 20,
+                          size: 24,
                           color: context.textSecondary,
                         ),
                       ),

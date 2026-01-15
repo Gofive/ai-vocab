@@ -1,12 +1,44 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
 import 'package:ai_vocab/db_helper.dart';
 
-class SettingsPage extends StatelessWidget {
+class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
 
   @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  bool _darkMode = true;
+  bool _notificationEnabled = true;
+  int _dailyGoal = 10;
+  String _reminderTime = '08:30 AM';
+
+  // 统计数据（实际应从数据库获取）
+  int _learnedWords = 0;
+  int _activeDays = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStats();
+  }
+
+  Future<void> _loadStats() async {
+    // 这里可以从数据库加载实际数据
+    // TODO: 从 DBHelper 获取实际统计数据
+    setState(() {
+      _learnedWords = 1240; // 替换为实际数据
+      _activeDays = 45; // 替换为实际数据
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final primaryColor = Theme.of(context).colorScheme.primary;
+
     return Scaffold(
       backgroundColor: context.backgroundColor,
       body: SafeArea(
@@ -14,13 +46,36 @@ class SettingsPage extends StatelessWidget {
           slivers: [
             SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.all(24),
+                padding: const EdgeInsets.symmetric(horizontal: 20),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    _buildUserCard(context),
+                    const SizedBox(height: 16),
+                    // 用户头像和信息
+                    _buildUserProfile(context, primaryColor),
                     const SizedBox(height: 24),
-                    _buildSettingsSection(context),
+                    // 统计卡片
+                    _buildStatsCards(context, primaryColor),
+                    const SizedBox(height: 28),
+                    // 账户设置
+                    _buildSectionTitle('账户设置'),
+                    const SizedBox(height: 12),
+                    _buildAccountSection(context, primaryColor),
+                    const SizedBox(height: 28),
+                    // 学习偏好
+                    _buildSectionTitle('学习偏好'),
+                    const SizedBox(height: 12),
+                    _buildPreferencesSection(context, primaryColor),
+                    const SizedBox(height: 28),
+                    // 其他设置
+                    _buildOtherSection(context, primaryColor),
+                    const SizedBox(height: 28),
+                    // 退出登录按钮
+                    _buildLogoutButton(context, primaryColor),
+                    const SizedBox(height: 20),
+                    // 版本信息
+                    _buildVersionInfo(context),
+                    const SizedBox(height: 40),
                   ],
                 ),
               ),
@@ -31,48 +86,160 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
-  Widget _buildUserCard(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            Theme.of(context).colorScheme.primary,
-            Theme.of(context).colorScheme.secondary,
-          ],
-        ),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
+  Widget _buildUserProfile(BuildContext context, Color primaryColor) {
+    return Center(
+      child: Column(
         children: [
-          Container(
-            width: 60,
-            height: 60,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(60),
-            ),
-            child: const Icon(Icons.person, color: Colors.white, size: 32),
-          ),
-          const SizedBox(width: 16),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '学习者',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.white,
+          Stack(
+            children: [
+              Container(
+                width: 70,
+                height: 70,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  border: Border.all(
+                    color: primaryColor.withValues(alpha: 0.3),
+                    width: 2,
                   ),
                 ),
-                SizedBox(height: 4),
-                Text(
-                  '坚持学习，每天进步',
-                  style: TextStyle(fontSize: 14, color: Colors.white70),
+                child: ClipOval(
+                  child: Container(
+                    color: context.surfaceColor,
+                    child: Icon(Icons.person, size: 38, color: primaryColor),
+                  ),
                 ),
-              ],
+              ),
+              // PRO 标签
+              Positioned(
+                bottom: 0,
+                right: 0,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: primaryColor,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'PRO',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 8,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '学习者',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: context.textPrimary,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'learner@example.com',
+            style: TextStyle(fontSize: 14, color: context.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatsCards(BuildContext context, Color primaryColor) {
+    return Row(
+      children: [
+        Expanded(
+          child: _buildStatCard(
+            context,
+            icon: Icons.bar_chart_rounded,
+            iconColor: primaryColor,
+            label: '已学单词',
+            value: _learnedWords.toString(),
+            change: '+12%',
+            changePositive: true,
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: _buildStatCard(
+            context,
+            icon: Icons.local_fire_department_rounded,
+            iconColor: Colors.orange,
+            label: '活跃天数',
+            value: _activeDays.toString(),
+            change: '+5%',
+            changePositive: true,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildStatCard(
+    BuildContext context, {
+    required IconData icon,
+    required Color iconColor,
+    required String label,
+    required String value,
+    required String change,
+    required bool changePositive,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: context.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: context.dividerColor.withOpacity(0.5),
+          width: 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Icon(icon, color: iconColor, size: 22),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: changePositive
+                      ? Colors.green.withOpacity(0.15)
+                      : Colors.red.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  change,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    color: changePositive ? Colors.green : Colors.red,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            label,
+            style: TextStyle(fontSize: 13, color: context.textSecondary),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: context.textPrimary,
             ),
           ),
         ],
@@ -80,72 +247,140 @@ class SettingsPage extends StatelessWidget {
     );
   }
 
-  Widget _buildSettingsSection(BuildContext context) {
+  Widget _buildSectionTitle(String title) {
+    return Text(
+      title,
+      style: TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        color: context.textSecondary,
+      ),
+    );
+  }
+
+  Widget _buildAccountSection(BuildContext context, Color primaryColor) {
     return Container(
       decoration: BoxDecoration(
         color: context.surfaceColor,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: context.isDark
-            ? null
-            : [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.04),
-                  blurRadius: 20,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          _buildSettingItem(
+            context,
+            icon: Icons.person_outline,
+            iconColor: primaryColor,
+            title: '编辑个人资料',
+            onTap: () {},
+          ),
+          _buildDivider(context),
+          _buildSettingItem(
+            context,
+            icon: Icons.card_membership_outlined,
+            iconColor: primaryColor,
+            title: '订阅计划',
+            subtitle: '高级会员已激活',
+            subtitleColor: primaryColor,
+            onTap: () {},
+          ),
+          _buildDivider(context),
+          _buildSettingItem(
+            context,
+            icon: Icons.security_outlined,
+            iconColor: primaryColor,
+            title: '安全设置',
+            onTap: () {},
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPreferencesSection(BuildContext context, Color primaryColor) {
+    return Container(
+      decoration: BoxDecoration(
+        color: context.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        children: [
+          _buildSettingItem(
+            context,
+            icon: Icons.flag_outlined,
+            iconColor: primaryColor,
+            title: '每日目标',
+            trailing: Text(
+              '$_dailyGoal 词/日',
+              style: TextStyle(fontSize: 14, color: context.textSecondary),
+            ),
+            onTap: () => _showDailyGoalPicker(context),
+          ),
+          _buildDivider(context),
+          _buildSettingItem(
+            context,
+            icon: Icons.access_time_outlined,
+            iconColor: primaryColor,
+            title: '提醒时间',
+            trailing: Text(
+              _reminderTime,
+              style: TextStyle(fontSize: 14, color: context.textSecondary),
+            ),
+            onTap: () => _showTimePicker(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOtherSection(BuildContext context, Color primaryColor) {
+    return Container(
+      decoration: BoxDecoration(
+        color: context.surfaceColor,
+        borderRadius: BorderRadius.circular(16),
       ),
       child: Column(
         children: [
           _buildSettingItem(
             context,
             icon: Icons.notifications_outlined,
-            title: '学习提醒',
-            subtitle: '每日提醒你学习',
-            onTap: () {},
-          ),
-          _buildDivider(context),
-          _buildSettingItem(
-            context,
-            icon: Icons.dark_mode_outlined,
-            title: '深色模式',
-            subtitle: '跟随系统',
-            trailing: Icon(
-              context.isDark ? Icons.dark_mode : Icons.light_mode,
-              color: context.textSecondary,
+            iconColor: primaryColor,
+            title: '通知设置',
+            trailing: CupertinoSwitch(
+              value: _notificationEnabled,
+              activeTrackColor: primaryColor,
+              onChanged: (value) {
+                setState(() => _notificationEnabled = value);
+              },
             ),
           ),
           _buildDivider(context),
           _buildSettingItem(
             context,
-            icon: Icons.volume_up_outlined,
-            title: '发音设置',
-            subtitle: '美式/英式发音',
+            icon: Icons.dark_mode_outlined,
+            iconColor: primaryColor,
+            title: '主题模式',
+            trailing: CupertinoSwitch(
+              value: _darkMode,
+              activeTrackColor: primaryColor,
+              onChanged: (value) {
+                setState(() => _darkMode = value);
+              },
+            ),
+          ),
+          _buildDivider(context),
+          _buildSettingItem(
+            context,
+            icon: Icons.help_outline,
+            iconColor: primaryColor,
+            title: '帮助与支持',
             onTap: () {},
           ),
           _buildDivider(context),
           _buildSettingItem(
             context,
-            icon: Icons.delete_outline,
-            title: '清除学习记录',
-            subtitle: '重置所有进度',
-            onTap: () {},
-          ),
-          _buildDivider(context),
-          _buildSettingItem(
-            context,
-            icon: Icons.info_outline,
-            title: '关于',
-            subtitle: 'v1.0.0',
-            onTap: () {},
-          ),
-          _buildDivider(context),
-          _buildSettingItem(
-            context,
-            icon: Icons.bug_report,
+            icon: Icons.bug_report_outlined,
+            iconColor: Colors.orange,
             title: 'Debug: 复习时间-1天',
-            subtitle: '用于测试复习模块',
-            trailing: const Icon(Icons.touch_app, color: Colors.red),
             onTap: () async {
               await DBHelper().debugReduceReviewDate();
               if (context.mounted) {
@@ -163,48 +398,191 @@ class SettingsPage extends StatelessWidget {
   Widget _buildSettingItem(
     BuildContext context, {
     required IconData icon,
+    required Color iconColor,
     required String title,
-    required String subtitle,
+    String? subtitle,
+    Color? subtitleColor,
     Widget? trailing,
     VoidCallback? onTap,
   }) {
-    return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-      leading: Container(
-        width: 44,
-        height: 44,
-        decoration: BoxDecoration(
-          color: context.isDark
-              ? AppTheme.darkDivider
-              : const Color(0xFFF1F5F9),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Icon(icon, color: context.textSecondary),
-      ),
-      title: Text(
-        title,
-        style: TextStyle(
-          fontSize: 16,
-          fontWeight: FontWeight.w500,
-          color: context.textPrimary,
-        ),
-      ),
-      subtitle: Text(
-        subtitle,
-        style: TextStyle(fontSize: 13, color: context.textSecondary),
-      ),
-      trailing:
-          trailing ?? Icon(Icons.chevron_right, color: context.textSecondary),
+    return InkWell(
       onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        child: Row(
+          children: [
+            Icon(icon, color: iconColor, size: 22),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w500,
+                      color: context.textPrimary,
+                    ),
+                  ),
+                  if (subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: subtitleColor ?? context.textSecondary,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            trailing ??
+                Icon(
+                  Icons.chevron_right,
+                  color: context.textSecondary,
+                  size: 22,
+                ),
+          ],
+        ),
+      ),
     );
   }
 
   Widget _buildDivider(BuildContext context) {
-    return Divider(
-      height: 1,
-      indent: 80,
-      endIndent: 20,
-      color: context.dividerColor,
+    return Padding(
+      padding: const EdgeInsets.only(left: 50),
+      child: Divider(height: 1, color: context.dividerColor.withOpacity(0.5)),
     );
+  }
+
+  Widget _buildLogoutButton(BuildContext context, Color primaryColor) {
+    return Container(
+      width: double.infinity,
+      height: 50,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: primaryColor.withOpacity(0.5), width: 1.5),
+      ),
+      child: TextButton(
+        onPressed: () {
+          // 退出登录逻辑
+        },
+        style: TextButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.logout, color: primaryColor, size: 20),
+            const SizedBox(width: 8),
+            Text(
+              '退出登录',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: primaryColor,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildVersionInfo(BuildContext context) {
+    return Center(
+      child: Column(
+        children: [
+          Text(
+            '版本 1.0.0 (1001)',
+            style: TextStyle(fontSize: 12, color: context.textSecondary),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                '隐私政策',
+                style: TextStyle(fontSize: 12, color: context.textSecondary),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Text(
+                  '|',
+                  style: TextStyle(fontSize: 12, color: context.textSecondary),
+                ),
+              ),
+              Text(
+                '服务条款',
+                style: TextStyle(fontSize: 12, color: context.textSecondary),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDailyGoalPicker(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: context.surfaceColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '每日学习目标',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: context.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 20),
+            ...List.generate(5, (index) {
+              final goal = (index + 1) * 5;
+              return ListTile(
+                title: Text(
+                  '$goal 词/日',
+                  style: TextStyle(color: context.textPrimary),
+                ),
+                trailing: _dailyGoal == goal
+                    ? Icon(
+                        Icons.check,
+                        color: Theme.of(context).colorScheme.primary,
+                      )
+                    : null,
+                onTap: () {
+                  setState(() => _dailyGoal = goal);
+                  Navigator.pop(context);
+                },
+              );
+            }),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showTimePicker(BuildContext context) async {
+    final time = await showTimePicker(
+      context: context,
+      initialTime: const TimeOfDay(hour: 8, minute: 30),
+    );
+    if (time != null) {
+      setState(() {
+        _reminderTime = time.format(context);
+      });
+    }
   }
 }

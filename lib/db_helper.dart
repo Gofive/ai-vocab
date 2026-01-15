@@ -223,6 +223,8 @@ class DBHelper {
 
     int todayNewCount = 0;
     int reviewCount = 0;
+    int reviewedCount = 0;
+    int reviewTotal = 0;
 
     if (sessionCheck.isNotEmpty) {
       // 有今日会话：从队列统计
@@ -247,6 +249,17 @@ class DBHelper {
         [sessionId],
       );
       reviewCount = queueReviewResult.first['count'] as int? ?? 0;
+
+      // 已复习 = 队列中已完成的复习任务数量
+      final queueReviewedResult = await db.rawQuery(
+        '''
+        SELECT COUNT(*) as count FROM study_session_queue
+        WHERE session_id = ? AND is_review = 1 AND is_done = 1
+      ''',
+        [sessionId],
+      );
+      reviewedCount = queueReviewedResult.first['count'] as int? ?? 0;
+      reviewTotal = reviewCount + reviewedCount;
     } else {
       // 无今日会话：从 user_study_progress 表统计
       // 今日新词 = 今日首次学习的单词数量
@@ -269,10 +282,12 @@ class DBHelper {
         [dictName, today],
       );
       reviewCount = progressReviewResult.first['count'] as int? ?? 0;
+      reviewTotal = reviewCount;
+      reviewedCount = 0;
     }
 
     print(
-      'DEBUG getDictProgress: 词典=$dictName, 总词数=$totalCount, 已学=$learnedCount, 今日新词=$todayNewCount, 待复习=$reviewCount',
+      'DEBUG getDictProgress: 词典=$dictName, 总词数=$totalCount, 已学=$learnedCount, 今日新词=$todayNewCount, 待复习=$reviewCount, 已复习=$reviewedCount',
     );
 
     return DictProgress(
@@ -281,6 +296,8 @@ class DBHelper {
       learnedCount: learnedCount,
       todayNewCount: todayNewCount,
       todayReviewCount: reviewCount,
+      todayReviewedCount: reviewedCount,
+      todayReviewTotal: reviewTotal,
       settings: settings, // 使用原始设置，不做动态调整
       lastStudyTime: null,
     );
@@ -1031,4 +1048,94 @@ enum TodaySessionStatus {
   noSession, // 今日没有学习记录
   inProgress, // 今日有未完成的学习
   completed, // 今日学习已完成
+}
+
+// ==================== 打卡统计 ====================
+
+extension DBHelperStreak on DBHelper {
+  /// 获取连续打卡天数
+  Future<int> getStudyStreak() async {
+    final db = await database;
+
+    // 获取所有有学习记录的日期（已完成的会话）
+    final result = await db.rawQuery('''
+      SELECT DISTINCT DATE(session_date) as study_date
+      FROM study_session
+      WHERE is_completed = 1
+      ORDER BY study_date DESC
+    ''');
+
+    if (result.isEmpty) return 0;
+
+    final today = DateTime.now();
+    final todayStr =
+        '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+
+    int streak = 0;
+    DateTime checkDate = today;
+
+    // 如果今天还没学习，从昨天开始计算
+    final firstStudyDate = result.first['study_date'] as String;
+    if (firstStudyDate != todayStr) {
+      checkDate = today.subtract(const Duration(days: 1));
+    }
+
+    for (final row in result) {
+      final studyDateStr = row['study_date'] as String;
+      final parts = studyDateStr.split('-');
+      final studyDate = DateTime(
+        int.parse(parts[0]),
+        int.parse(parts[1]),
+        int.parse(parts[2]),
+      );
+
+      final checkDateStr =
+          '${checkDate.year}-${checkDate.month.toString().padLeft(2, '0')}-${checkDate.day.toString().padLeft(2, '0')}';
+
+      if (studyDateStr == checkDateStr) {
+        streak++;
+        checkDate = checkDate.subtract(const Duration(days: 1));
+      } else if (studyDate.isBefore(checkDate)) {
+        // 中断了
+        break;
+      }
+    }
+
+    return streak;
+  }
+
+  /// 获取指定日期范围内的学习日期
+  Future<Set<DateTime>> getStudiedDatesInRange(
+    DateTime start,
+    DateTime end,
+  ) async {
+    final db = await database;
+
+    final startStr =
+        '${start.year}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}';
+    final endStr =
+        '${end.year}-${end.month.toString().padLeft(2, '0')}-${end.day.toString().padLeft(2, '0')}';
+
+    final result = await db.rawQuery(
+      '''
+      SELECT DISTINCT DATE(session_date) as study_date
+      FROM study_session
+      WHERE is_completed = 1
+        AND DATE(session_date) >= ?
+        AND DATE(session_date) <= ?
+    ''',
+      [startStr, endStr],
+    );
+
+    final dates = <DateTime>{};
+    for (final row in result) {
+      final dateStr = row['study_date'] as String;
+      final parts = dateStr.split('-');
+      dates.add(
+        DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2])),
+      );
+    }
+
+    return dates;
+  }
 }
