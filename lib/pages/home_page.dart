@@ -3,6 +3,7 @@ import 'package:ai_vocab/pages/dict_page.dart';
 import 'package:ai_vocab/pages/study_page.dart';
 import 'package:ai_vocab/pages/settings_page.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
+import 'package:ai_vocab/widgets/review_reminder_badge.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -52,7 +53,13 @@ class _HomePageState extends State<HomePage> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.spaceAround,
               children: [
-                _buildNavItem(0, Icons.school_outlined, Icons.school, '学习'),
+                _buildNavItem(
+                  0,
+                  Icons.school_outlined,
+                  Icons.school,
+                  '学习',
+                  showBadge: true,
+                ),
                 _buildNavItem(1, Icons.book_outlined, Icons.book, '词典'),
                 _buildNavItem(2, Icons.person_outline, Icons.person, '我的'),
               ],
@@ -67,11 +74,23 @@ class _HomePageState extends State<HomePage> {
     int index,
     IconData icon,
     IconData activeIcon,
-    String label,
-  ) {
+    String label, {
+    bool showBadge = false,
+  }) {
     final isActive = _currentIndex == index;
     final primaryColor = Theme.of(context).colorScheme.primary;
     final color = isActive ? primaryColor : context.textSecondary;
+
+    Widget iconWidget = Icon(
+      isActive ? activeIcon : icon,
+      color: color,
+      size: 24,
+    );
+
+    // 如果需要显示徽章，包装图标
+    if (showBadge) {
+      iconWidget = ReviewReminderBadge(top: -2, right: -6, child: iconWidget);
+    }
 
     return Expanded(
       child: GestureDetector(
@@ -80,7 +99,7 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(isActive ? activeIcon : icon, color: color, size: 24),
+            iconWidget,
             const SizedBox(height: 4),
             Text(
               label,

@@ -17,6 +17,8 @@ import 'package:fsrs/fsrs.dart';
 /// - lapses: 遗忘次数
 /// - state: 卡片状态 (1=Learning, 2=Review, 3=Relearning)
 /// - last_review: 上次复习时间 (ISO8601)
+/// - first_learned_date: 首次学习日期 (ISO8601，仅日期部分)
+/// - occurrence: 在当前会话队列中的出现次数（用于区分新词首次学习和重复学习）
 class WordCard {
   final int wordId;
   final String word;
@@ -27,6 +29,8 @@ class WordCard {
   int elapsedDays;
   int reps;
   int lapses;
+  String? firstLearnedDate; // 首次学习日期
+  int occurrence; // 在队列中的出现次数（1=首次，>1=重复学习）
 
   WordCard({
     required this.wordId,
@@ -36,6 +40,8 @@ class WordCard {
     this.elapsedDays = 0,
     this.reps = 0,
     this.lapses = 0,
+    this.firstLearnedDate,
+    this.occurrence = 1,
   }) : card = card ?? Card(cardId: 0);
 
   /// 是否到期需要复习
@@ -48,9 +54,33 @@ class WordCard {
 
   /// 是否是复习卡片（非新卡）
   ///
-  /// 当卡片状态不是 Learning（新卡初始状态）时，返回 true
-  /// FSRS 状态: Learning(1), Review(2), Relearning(3)
-  bool get isReview => card.state != State.learning;
+  /// 判断逻辑：
+  /// 1. 如果 first_learned_date 不是今天，则是复习词
+  /// 2. 如果 first_learned_date 是今天，但 occurrence > 1，则按复习词处理
+  /// 3. 如果 first_learned_date 是今天，且 occurrence = 1，则是新词
+  bool get isReview {
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+
+    // 如果没有首次学习日期，说明是全新的词
+    if (firstLearnedDate == null) {
+      return occurrence > 1; // 第一次出现是新词，后续是复习
+    }
+
+    // 如果首次学习日期不是今天，则是复习词
+    if (firstLearnedDate != today) {
+      return true;
+    }
+
+    // 首次学习日期是今天，根据出现次数判断
+    // occurrence = 1 是新词首次学习，> 1 是今天内的重复学习（按复习处理）
+    return occurrence > 1;
+  }
+
+  /// 是否是今日新词
+  bool get isTodayNewWord {
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+    return firstLearnedDate == today;
+  }
 
   /// 从数据库 Map 创建 WordCard
   ///
@@ -67,6 +97,7 @@ class WordCard {
   /// - lapses: int
   /// - state: int (State 枚举索引)
   /// - last_review: String? (ISO8601 格式，可选)
+  /// - first_learned_date: String? (ISO8601 格式，可选)
   factory WordCard.fromMap(Map<String, dynamic> map) {
     final wordId = map['word_id'] as int;
 
@@ -101,6 +132,8 @@ class WordCard {
       elapsedDays: map['elapsed_days'] as int? ?? 0,
       reps: map['reps'] as int? ?? 0,
       lapses: map['lapses'] as int? ?? 0,
+      firstLearnedDate: map['first_learned_date'] as String?,
+      occurrence: map['occurrence'] as int? ?? 1,
     );
   }
 
@@ -123,6 +156,7 @@ class WordCard {
       'lapses': lapses,
       'state': (cardMap['state'] as int?) ?? card.state.index,
       'last_review': cardMap['lastReview'] as String?,
+      'first_learned_date': firstLearnedDate,
     };
   }
 
@@ -137,6 +171,8 @@ class WordCard {
     int? elapsedDays,
     int? reps,
     int? lapses,
+    String? firstLearnedDate,
+    int? occurrence,
   }) {
     return WordCard(
       wordId: wordId ?? this.wordId,
@@ -146,13 +182,16 @@ class WordCard {
       elapsedDays: elapsedDays ?? this.elapsedDays,
       reps: reps ?? this.reps,
       lapses: lapses ?? this.lapses,
+      firstLearnedDate: firstLearnedDate ?? this.firstLearnedDate,
+      occurrence: occurrence ?? this.occurrence,
     );
   }
 
   @override
   String toString() {
     return 'WordCard(wordId: $wordId, word: $word, dictName: $dictName, '
-        'due: ${card.due}, state: ${card.state}, reps: $reps, lapses: $lapses)';
+        'due: ${card.due}, state: ${card.state}, reps: $reps, lapses: $lapses, '
+        'firstLearnedDate: $firstLearnedDate, occurrence: $occurrence)';
   }
 
   @override
@@ -174,7 +213,9 @@ class WordCard {
         cardMap['lastReview'] == otherCardMap['lastReview'] &&
         elapsedDays == other.elapsedDays &&
         reps == other.reps &&
-        lapses == other.lapses;
+        lapses == other.lapses &&
+        firstLearnedDate == other.firstLearnedDate &&
+        occurrence == other.occurrence;
   }
 
   @override
@@ -193,6 +234,8 @@ class WordCard {
       elapsedDays,
       reps,
       lapses,
+      firstLearnedDate,
+      occurrence,
     );
   }
 }

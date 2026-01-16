@@ -1,18 +1,16 @@
 import 'dart:io';
 import 'package:ai_vocab/models/study_settings.dart';
 import 'package:ai_vocab/models/word_model.dart';
-import 'package:ai_vocab/models/word_progress.dart';
 import 'package:ai_vocab/models/word_card.dart';
 import 'package:ai_vocab/models/review_log.dart';
 import 'package:ai_vocab/models/study_session.dart';
+import 'package:ai_vocab/services/review_reminder_service.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path_provider/path_provider.dart';
 
 /// 数据库版本号
-/// - 1: 初始版本 (SM-2)
-/// - 2: FSRS 迁移版本
 const int _dbVersion = 2;
 
 class DBHelper {
@@ -115,12 +113,35 @@ class DBHelper {
         queue_index INTEGER NOT NULL,
         is_review INTEGER DEFAULT 0,
         is_done INTEGER DEFAULT 0,
+        occurrence INTEGER DEFAULT 1,
         FOREIGN KEY (session_id) REFERENCES study_session(id) ON DELETE CASCADE
       )
     ''');
 
+    // 添加 occurrence 字段（如果不存在）
+    await _addOccurrenceColumn(db);
+
     // 检查并升级数据库结构到 FSRS
     await _upgradeToFSRS(db);
+  }
+
+  /// 添加 occurrence 字段到 study_session_queue 表
+  Future<void> _addOccurrenceColumn(Database db) async {
+    final tableInfo = await db.rawQuery(
+      "PRAGMA table_info(study_session_queue)",
+    );
+    final existingColumns = tableInfo.map((c) => c['name'] as String).toSet();
+
+    if (!existingColumns.contains('occurrence')) {
+      try {
+        await db.execute(
+          'ALTER TABLE study_session_queue ADD COLUMN occurrence INTEGER DEFAULT 1',
+        );
+        print('DEBUG: 添加列 occurrence 到 study_session_queue');
+      } catch (e) {
+        print('DEBUG: 添加列 occurrence 失败: $e');
+      }
+    }
   }
 
   /// 检查数据库版本并升级到 FSRS 结构
@@ -186,6 +207,7 @@ class DBHelper {
       'reps': 'INTEGER DEFAULT 0', // 成功复习次数
       'lapses': 'INTEGER DEFAULT 0', // 遗忘次数
       'last_review': 'TEXT', // 上次复习时间 (ISO8601)
+      'first_learned_date': 'TEXT', // 首次学习日期 (ISO8601)
     };
 
     for (final entry in fsrsColumns.entries) {
@@ -450,7 +472,7 @@ class DBHelper {
       '''
       SELECT usp.word_id, usp.dict_name, usp.due, usp.stability, usp.difficulty,
              usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
-             usp.state, usp.last_review, w.word
+             usp.state, usp.last_review, usp.first_learned_date, w.word
       FROM user_study_progress usp
       JOIN words w ON usp.word_id = w.id
       WHERE usp.word_id = ? AND usp.dict_name = ?
@@ -467,10 +489,31 @@ class DBHelper {
   /// 保存 FSRS 卡片
   ///
   /// 将 WordCard 保存到数据库。如果记录已存在则更新，否则插入新记录。
+  /// 首次保存时会自动设置 first_learned_date 为当前日期。
   ///
   /// _Requirements: 6.1_
   Future<void> saveWordCard(WordCard card) async {
     final db = await database;
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+
+    // 检查是否是首次学习（没有 first_learned_date）
+    if (card.firstLearnedDate == null) {
+      // 检查数据库中是否已有记录
+      final existing = await db.query(
+        'user_study_progress',
+        columns: ['first_learned_date'],
+        where: 'word_id = ? AND dict_name = ?',
+        whereArgs: [card.wordId, card.dictName],
+      );
+
+      if (existing.isEmpty || existing.first['first_learned_date'] == null) {
+        // 首次学习，设置 first_learned_date
+        card.firstLearnedDate = today;
+      } else {
+        // 保留已有的 first_learned_date
+        card.firstLearnedDate = existing.first['first_learned_date'] as String?;
+      }
+    }
 
     final map = card.toMap();
 
@@ -480,12 +523,23 @@ class DBHelper {
       map,
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
+
+    // 通知复习提醒服务数据已变更
+    ReviewReminderService().notifyChange();
   }
 
   /// 获取待复习的 FSRS 卡片
   ///
   /// 查询指定词典中所有到期需要复习的卡片。
   /// 按 due 日期升序排列（最早到期的优先）。
+  /// 获取待复习的 FSRS 卡片
+  ///
+  /// 查询指定词典中所有到期需要复习的卡片（due <= now）。
+  /// 按 due 日期升序排列（最早到期的优先）。
+  ///
+  /// 注意：此方法返回所有 FSRS 算法层面到期的卡片，
+  /// 不区分是今日新词还是之前学过的词。
+  /// 如需区分，请使用 WordCard.isReview 属性。
   ///
   /// [dictName] - 词典名称
   /// [limit] - 返回的最大卡片数量，默认 100
@@ -499,7 +553,7 @@ class DBHelper {
       '''
       SELECT usp.word_id, usp.dict_name, usp.due, usp.stability, usp.difficulty,
              usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
-             usp.state, usp.last_review, w.word
+             usp.state, usp.last_review, usp.first_learned_date, w.word
       FROM user_study_progress usp
       JOIN words w ON usp.word_id = w.id
       WHERE usp.dict_name = ?
@@ -509,6 +563,41 @@ class DBHelper {
       LIMIT ?
     ''',
       [dictName, now, limit],
+    );
+
+    return results.map((row) => WordCard.fromMap(row)).toList();
+  }
+
+  /// 获取待复习的 FSRS 卡片（排除今日新词）
+  ///
+  /// 用于统计"复习巩固"数量，排除今日首次学习的新词。
+  /// 今日新词的定义：first_learned_date = 今天
+  ///
+  /// [dictName] - 词典名称
+  /// [limit] - 返回的最大卡片数量，默认 100
+  Future<List<WordCard>> getDueCardsExcludeTodayNew(
+    String dictName, {
+    int limit = 100,
+  }) async {
+    final db = await database;
+    final now = DateTime.now().toUtc().toIso8601String();
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+
+    final results = await db.rawQuery(
+      '''
+      SELECT usp.word_id, usp.dict_name, usp.due, usp.stability, usp.difficulty,
+             usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
+             usp.state, usp.last_review, usp.first_learned_date, w.word
+      FROM user_study_progress usp
+      JOIN words w ON usp.word_id = w.id
+      WHERE usp.dict_name = ?
+        AND usp.due IS NOT NULL AND usp.due != ''
+        AND usp.due <= ?
+        AND (usp.first_learned_date IS NULL OR DATE(usp.first_learned_date) != ?)
+      ORDER BY usp.due ASC
+      LIMIT ?
+    ''',
+      [dictName, now, today, limit],
     );
 
     return results.map((row) => WordCard.fromMap(row)).toList();
@@ -530,7 +619,7 @@ class DBHelper {
       '''
       SELECT usp.word_id, usp.dict_name, usp.due, usp.stability, usp.difficulty,
              usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
-             usp.state, usp.last_review, w.word
+             usp.state, usp.last_review, usp.first_learned_date, w.word
       FROM user_study_progress usp
       JOIN words w ON usp.word_id = w.id
       WHERE usp.dict_name = ?
@@ -750,14 +839,14 @@ class DBHelper {
 
   /// 获取词典学习进度
   ///
-  /// 使用 FSRS 数据结构计算学习统计：
-  /// - 已学习: 有 FSRS 数据的记录（due IS NOT NULL）
-  /// - 今日新词: 首次复习日期 = 今天 (last_review 字段，且 reps = 1)
-  /// - 待复习: due <= now AND state in (2=Review, 3=Relearning)
-  ///
-  /// _Requirements: 7.1, 7.2, 7.3, 7.4_
+  /// 统计逻辑：
+  /// - 已学习: 有 FSRS 数据的记录
+  /// - 今日新词: 队列中 is_review = 0 且 is_done = 1 的数量
+  /// - 复习总量: 队列中 is_review = 1 的数量
+  /// - 已复习: 队列中 is_review = 1 且 is_done = 1 的数量
   Future<DictProgress> getDictProgress(String dictName) async {
     final db = await database;
+    final today = DateTime.now().toIso8601String().substring(0, 10);
 
     // 获取词典总词数
     final countResult = await db.rawQuery(
@@ -771,9 +860,7 @@ class DBHelper {
     );
     final totalCount = countResult.first['total'] as int;
 
-    // FSRS 统计：已学习 = 有 FSRS 数据的记录（due IS NOT NULL AND due != ''）
-    // 这表示该单词已经被复习过至少一次
-    // _Requirements: 7.1_
+    // 已学习 = 有 FSRS 数据的记录
     final learnedResult = await db.rawQuery(
       '''
       SELECT COUNT(*) as count FROM user_study_progress
@@ -783,11 +870,7 @@ class DBHelper {
     );
     final learnedCount = learnedResult.first['count'] as int? ?? 0;
 
-    // 获取今日进度日期标志
-    final today = DateTime.now().toIso8601String().substring(0, 10);
-    final nowUtc = DateTime.now().toUtc().toIso8601String();
-
-    // 1. 先获取学习设置（为了后续计算动态分母）
+    // 获取学习设置
     final progressResult = await db.query(
       'study_progress',
       where: 'dict_name = ?',
@@ -802,107 +885,46 @@ class DBHelper {
       );
     }
 
-    // 2 & 3. 获取今日新词统计和待复习数量
-    // 如果有今日会话，从队列获取数据；否则从 user_study_progress 表获取
-    final sessionCheck = await db.query(
+    // 基于今日队列统计
+    int todayNewCount = 0;
+    int reviewTotal = 0;
+    int reviewedCount = 0;
+
+    final sessionResult = await db.query(
       'study_session',
       where: 'dict_name = ? AND session_date = ?',
       whereArgs: [dictName, today],
     );
 
-    int todayNewCount = 0;
-    int reviewCount = 0;
-    int reviewedCount = 0;
-    int reviewTotal = 0;
+    if (sessionResult.isNotEmpty) {
+      final sessionId = sessionResult.first['id'] as int;
 
-    if (sessionCheck.isNotEmpty) {
-      // 有今日会话：从队列统计
-      final sessionId = sessionCheck.first['id'] as int;
-
-      // 今日新词 = 队列中已完成的新词数量
-      final newWordsDoneResult = await db.rawQuery(
-        '''
-        SELECT COUNT(*) as count FROM study_session_queue
-        WHERE session_id = ? AND is_review = 0 AND is_done = 1
-      ''',
+      // 今日新词 = 队列中 is_review = 0 且 is_done = 1
+      final newResult = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM study_session_queue WHERE session_id = ? AND is_review = 0 AND is_done = 1',
         [sessionId],
       );
-      todayNewCount = newWordsDoneResult.first['count'] as int? ?? 0;
+      todayNewCount = newResult.first['count'] as int? ?? 0;
 
-      // 待复习 = 队列中未完成的复习任务数量
-      final queueReviewResult = await db.rawQuery(
-        '''
-        SELECT COUNT(*) as count FROM study_session_queue
-        WHERE session_id = ? AND is_review = 1 AND is_done = 0
-      ''',
+      // 复习总量 = 队列中 is_review = 1
+      final totalResult = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM study_session_queue WHERE session_id = ? AND is_review = 1',
         [sessionId],
       );
-      final queueReviewCount = queueReviewResult.first['count'] as int? ?? 0;
+      reviewTotal = totalResult.first['count'] as int? ?? 0;
 
-      // 已复习 = 队列中已完成的复习任务数量
-      final queueReviewedResult = await db.rawQuery(
-        '''
-        SELECT COUNT(*) as count FROM study_session_queue
-        WHERE session_id = ? AND is_review = 1 AND is_done = 1
-      ''',
+      // 已复习 = 队列中 is_review = 1 且 is_done = 1
+      final doneResult = await db.rawQuery(
+        'SELECT COUNT(*) as count FROM study_session_queue WHERE session_id = ? AND is_review = 1 AND is_done = 1',
         [sessionId],
       );
-      reviewedCount = queueReviewedResult.first['count'] as int? ?? 0;
-
-      // 额外检查：是否有新到期的复习词（不在当前队列中）
-      // 这些是在会话创建后到期的单词
-      final additionalDueResult = await db.rawQuery(
-        '''
-        SELECT COUNT(*) as count FROM user_study_progress usp
-        WHERE usp.dict_name = ?
-          AND usp.due IS NOT NULL AND usp.due != ''
-          AND usp.due <= ?
-          AND usp.word_id NOT IN (
-            SELECT word_id FROM study_session_queue WHERE session_id = ?
-          )
-      ''',
-        [dictName, nowUtc, sessionId],
-      );
-      final additionalDueCount =
-          additionalDueResult.first['count'] as int? ?? 0;
-
-      reviewCount = queueReviewCount + additionalDueCount;
-      reviewTotal = reviewCount + reviewedCount;
-    } else {
-      // 无今日会话：从 user_study_progress 表统计（使用 FSRS 字段）
-
-      // FSRS 统计：今日新词 = 今天首次学习的单词
-      // 使用 last_review 字段判断，且 reps = 1 表示是首次复习
-      // _Requirements: 7.2_
-      final todayStatsResult = await db.rawQuery(
-        '''
-        SELECT COUNT(*) as count
-        FROM user_study_progress
-        WHERE dict_name = ? AND DATE(last_review) = ? AND reps = 1
-      ''',
-        [dictName, today],
-      );
-      todayNewCount = (todayStatsResult.first['count'] as int?) ?? 0;
-
-      // FSRS 统计：待复习 = due <= now（所有到期的卡片）
-      // 包括 Learning, Review, Relearning 状态的卡片
-      // _Requirements: 7.3_
-      final progressReviewResult = await db.rawQuery(
-        '''
-        SELECT COUNT(*) as count FROM user_study_progress
-        WHERE dict_name = ? 
-          AND due IS NOT NULL AND due != ''
-          AND due <= ?
-      ''',
-        [dictName, nowUtc],
-      );
-      reviewCount = progressReviewResult.first['count'] as int? ?? 0;
-      reviewTotal = reviewCount;
-      reviewedCount = 0;
+      reviewedCount = doneResult.first['count'] as int? ?? 0;
     }
 
+    final reviewCount = reviewTotal - reviewedCount;
+
     print(
-      'DEBUG getDictProgress (FSRS): 词典=$dictName, 总词数=$totalCount, 已学=$learnedCount, 今日新词=$todayNewCount, 待复习=$reviewCount, 已复习=$reviewedCount',
+      'DEBUG getDictProgress: 词典=$dictName, 今日新词=$todayNewCount, 复习总量=$reviewTotal, 已复习=$reviewedCount, 待复习=$reviewCount',
     );
 
     return DictProgress(
@@ -913,7 +935,7 @@ class DBHelper {
       todayReviewCount: reviewCount,
       todayReviewedCount: reviewedCount,
       todayReviewTotal: reviewTotal,
-      settings: settings, // 使用原始设置，不做动态调整
+      settings: settings,
       lastStudyTime: null,
     );
   }
@@ -1041,58 +1063,33 @@ class DBHelper {
     return results.map((row) => row['word'] as String).toList();
   }
 
-  // ==================== SM-2 算法相关方法（已废弃） ====================
-
-  /// 获取今日需要复习的单词
-  ///
-  /// 此方法已废弃，请使用 [getDueCards] 替代。
-  /// FSRS 算法提供更精准的复习调度。
-  ///
-  /// _Requirements: 3.1_
-  @Deprecated(
-    'Use getDueCards instead. SM-2 algorithm has been replaced by FSRS.',
-  )
-  Future<List<WordProgress>> getReviewWords(
-    String dictName, {
-    int limit = 10,
-  }) async {
-    final db = await database;
-    final today = DateTime.now().toIso8601String().substring(0, 10);
-
-    final results = await db.rawQuery(
-      '''
-      SELECT usp.*, w.word 
-      FROM user_study_progress usp
-      JOIN words w ON usp.word_id = w.id
-      WHERE usp.dict_name = ? 
-        AND DATE(usp.next_review_date) <= ?
-        AND usp.state > 0
-      ORDER BY usp.next_review_date ASC
-      LIMIT ?
-    ''',
-      [dictName, today, limit],
-    );
-
-    return results
-        .map((row) => WordProgress.fromMap(row, isReview: true))
-        .toList();
-  }
-
-  /// 获取今日学习队列（新词 + 复习词穿插）- FSRS 版本
+  /// 获取今日学习队列（新词 + 复习词穿插）
   ///
   /// 使用 FSRS 算法获取待复习卡片，并与新词穿插组成学习队列。
-  ///
-  /// _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
   Future<List<WordCard>> getTodayStudyQueue(
     String dictName,
     StudySettings settings,
   ) async {
     final db = await database;
+    final today = DateTime.now().toIso8601String().substring(0, 10);
 
-    // 1. 获取需要复习的 FSRS 卡片 (获取所有到期的)
-    final reviewCards = await getDueCards(dictName, limit: 1000);
+    // 1. 获取需要复习的 FSRS 卡片（排除今日新词，避免重复）
+    final reviewCards = await getDueCardsExcludeTodayNew(dictName, limit: 1000);
 
-    // 2. 获取新单词 (固定数量，由设置决定)
+    // 2. 计算今日已学新词数量，确定还需要多少新词
+    final todayNewWordsResult = await db.rawQuery(
+      '''
+      SELECT COUNT(*) as count FROM user_study_progress
+      WHERE dict_name = ? AND DATE(first_learned_date) = ?
+    ''',
+      [dictName, today],
+    );
+    final todayLearnedNewCount =
+        todayNewWordsResult.first['count'] as int? ?? 0;
+    final remainingNewWords = (settings.dailyWords - todayLearnedNewCount)
+        .clamp(0, settings.dailyWords);
+
+    // 3. 获取新单词 (剩余需要学习的数量)
     String orderBy;
     switch (settings.mode) {
       case StudyMode.sequential:
@@ -1106,7 +1103,7 @@ class DBHelper {
         break;
     }
 
-    final newWordsLimit = settings.dailyWords; // 每日新词目标
+    final newWordsLimit = remainingNewWords; // 剩余需要学习的新词数量
     final newWordResults = await db.rawQuery(
       '''
       SELECT w.id as word_id, w.word, ? as dict_name
@@ -1176,47 +1173,138 @@ class DBHelper {
     ''');
   }
 
-  /// 更新单词学习进度 (SM-2 算法)
-  ///
-  /// 此方法已废弃，请使用 [saveWordCard] 替代。
-  /// FSRS 算法提供更精准的记忆预测能力。
-  ///
-  /// _Requirements: 3.1_
-  @Deprecated(
-    'Use saveWordCard instead. SM-2 algorithm has been replaced by FSRS.',
-  )
-  Future<void> updateWordProgress(WordProgress progress) async {
+  /// [Debug] 打印关键表数据
+  Future<void> debugPrintTables(String dictName) async {
     final db = await database;
-    await db.insert(
-      'user_study_progress',
-      progress.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
+    final today = DateTime.now().toIso8601String().substring(0, 10);
 
-  /// 获取单词的学习进度
-  ///
-  /// 此方法已废弃，请使用 [getWordCard] 替代。
-  /// FSRS 算法提供更精准的记忆预测能力。
-  ///
-  /// _Requirements: 3.1_
-  @Deprecated(
-    'Use getWordCard instead. SM-2 algorithm has been replaced by FSRS.',
-  )
-  Future<WordProgress?> getWordProgress(int wordId, String dictName) async {
-    final db = await database;
-    final results = await db.rawQuery(
+    print('\n========== DEBUG: 关键表数据 ($dictName) ==========');
+    print('今日日期: $today\n');
+
+    // 1. study_progress 表
+    print('--- study_progress ---');
+    final studyProgress = await db.query(
+      'study_progress',
+      where: 'dict_name = ?',
+      whereArgs: [dictName],
+    );
+    if (studyProgress.isEmpty) {
+      print('(无数据)');
+    } else {
+      for (final row in studyProgress) {
+        print(
+          'daily_words=${row['daily_words']}, mode=${row['study_mode']}, last_study=${row['last_study_time']}',
+        );
+      }
+    }
+
+    // 2. study_session 表
+    print('\n--- study_session (最近5条) ---');
+    final sessions = await db.rawQuery(
       '''
-      SELECT usp.*, w.word 
+      SELECT id, dict_name, session_date, current_index, is_completed
+      FROM study_session
+      WHERE dict_name = ?
+      ORDER BY session_date DESC
+      LIMIT 5
+    ''',
+      [dictName],
+    );
+    if (sessions.isEmpty) {
+      print('(无数据)');
+    } else {
+      for (final row in sessions) {
+        print(
+          'id=${row['id']}, date=${row['session_date']}, idx=${row['current_index']}, done=${row['is_completed']}',
+        );
+      }
+    }
+
+    // 3. study_session_queue 表 (今日会话)
+    print('\n--- study_session_queue (今日) ---');
+    final todaySession = await db.query(
+      'study_session',
+      where: 'dict_name = ? AND session_date = ?',
+      whereArgs: [dictName, today],
+    );
+    if (todaySession.isNotEmpty) {
+      final sessionId = todaySession.first['id'] as int;
+      final queue = await db.rawQuery(
+        '''
+        SELECT ssq.queue_index, ssq.word_id, w.word, ssq.is_review, ssq.is_done, ssq.occurrence
+        FROM study_session_queue ssq
+        JOIN words w ON ssq.word_id = w.id
+        WHERE ssq.session_id = ?
+        ORDER BY ssq.queue_index
+      ''',
+        [sessionId],
+      );
+      print('会话ID: $sessionId, 队列长度: ${queue.length}');
+      for (final row in queue) {
+        final status = row['is_done'] == 1 ? '✓' : ' ';
+        final type = row['is_review'] == 1 ? '复习' : '新词';
+        print(
+          '[$status] ${row['queue_index']}: ${row['word']} ($type, occ=${row['occurrence']})',
+        );
+      }
+    } else {
+      print('(今日无会话)');
+    }
+
+    // 4. user_study_progress 表
+    print('\n--- user_study_progress (最近20条) ---');
+    final progress = await db.rawQuery(
+      '''
+      SELECT usp.word_id, w.word, usp.due, usp.state, usp.reps, 
+             usp.first_learned_date, usp.last_review
       FROM user_study_progress usp
       JOIN words w ON usp.word_id = w.id
-      WHERE usp.word_id = ? AND usp.dict_name = ?
+      WHERE usp.dict_name = ?
+      ORDER BY usp.due ASC
+      LIMIT 20
     ''',
-      [wordId, dictName],
+      [dictName],
     );
+    if (progress.isEmpty) {
+      print('(无数据)');
+    } else {
+      final nowUtc = DateTime.now().toUtc().toIso8601String();
+      for (final row in progress) {
+        final due = row['due'] as String?;
+        final isDue = due != null && due.compareTo(nowUtc) <= 0;
+        final isTodayNew = row['first_learned_date'] == today;
+        String status = isDue ? '[到期]' : '';
+        if (isTodayNew) status += '[今日新]';
+        print(
+          '${row['word']}: due=${due?.substring(0, 10)}, state=${row['state']}, reps=${row['reps']}, first=${row['first_learned_date']} $status',
+        );
+      }
+    }
 
-    if (results.isEmpty) return null;
-    return WordProgress.fromMap(results.first);
+    // 5. review_logs 表 (今日)
+    print('\n--- review_logs (今日) ---');
+    final logs = await db.rawQuery(
+      '''
+      SELECT rl.word_id, w.word, rl.rating, rl.state, rl.review_datetime
+      FROM review_logs rl
+      JOIN words w ON rl.word_id = w.id
+      WHERE rl.dict_name = ? AND DATE(rl.review_datetime) = ?
+      ORDER BY rl.review_datetime DESC
+      LIMIT 20
+    ''',
+      [dictName, today],
+    );
+    if (logs.isEmpty) {
+      print('(今日无复习记录)');
+    } else {
+      for (final row in logs) {
+        print(
+          '${row['word']}: rating=${row['rating']}, state=${row['state']}, time=${row['review_datetime']}',
+        );
+      }
+    }
+
+    print('\n==========================================\n');
   }
 
   // ==================== 学习会话管理 ====================
@@ -1254,12 +1342,90 @@ class DBHelper {
         : TodaySessionStatus.inProgress;
   }
 
-  /// 获取或创建今日学习会话 - FSRS 版本
+  /// 动态追加到期复习单词到今日会话队列
   ///
-  /// 使用 WordCard 替代 WordProgress，支持 FSRS 算法。
+  /// 当 ReviewReminderService 检测到新的到期单词时调用此方法，
+  /// 将到期单词追加到今日会话末尾。
+  ///
+  /// 追加条件：单词到期（due <= now）且在队列中最后一次出现已完成
+  ///
+  /// 返回追加的单词数量，如果今日没有会话则返回 -1
+  Future<int> appendDueCardsToTodaySession(String dictName) async {
+    final db = await database;
+    final today = DateTime.now().toIso8601String().substring(0, 10);
+
+    // 检查今日会话是否存在
+    final sessionResult = await db.query(
+      'study_session',
+      where: 'dict_name = ? AND session_date = ?',
+      whereArgs: [dictName, today],
+    );
+
+    if (sessionResult.isEmpty) {
+      return -1; // 今日没有会话
+    }
+
+    final sessionId = sessionResult.first['id'] as int;
+
+    // 获取所有到期的复习卡片（包括今日新词，因为它们可能需要重复学习）
+    final dueCards = await getDueCards(dictName, limit: 100);
+
+    // 获取当前最大索引
+    final maxIdxResult = await db.rawQuery(
+      'SELECT MAX(queue_index) as max_idx FROM study_session_queue WHERE session_id = ?',
+      [sessionId],
+    );
+    int nextIdx = (maxIdxResult.first['max_idx'] as int? ?? -1) + 1;
+
+    int addedCount = 0;
+    for (final card in dueCards) {
+      // 检查该单词在队列中的最后一次出现是否已完成
+      final lastOccurrence = await db.rawQuery(
+        '''
+        SELECT is_done FROM study_session_queue 
+        WHERE session_id = ? AND word_id = ?
+        ORDER BY queue_index DESC
+        LIMIT 1
+        ''',
+        [sessionId, card.wordId],
+      );
+
+      // 如果单词不在队列中，或者最后一次出现已完成，则需要追加
+      final shouldAppend =
+          lastOccurrence.isEmpty ||
+          (lastOccurrence.first['is_done'] as int) == 1;
+
+      if (shouldAppend) {
+        // 计算该单词在队列中的出现次数
+        final occurrenceResult = await db.rawQuery(
+          'SELECT COUNT(*) as count FROM study_session_queue WHERE session_id = ? AND word_id = ?',
+          [sessionId, card.wordId],
+        );
+        final occurrence = (occurrenceResult.first['count'] as int? ?? 0) + 1;
+
+        await db.insert('study_session_queue', {
+          'session_id': sessionId,
+          'word_id': card.wordId,
+          'queue_index': nextIdx++,
+          'is_review': 1,
+          'is_done': 0,
+          'occurrence': occurrence,
+        });
+        addedCount++;
+      }
+    }
+
+    if (addedCount > 0) {
+      print('DEBUG appendDueCardsToTodaySession: 追加了 $addedCount 个到期复习单词');
+    }
+
+    return addedCount;
+  }
+
+  /// 获取或创建今日学习会话
+  ///
+  /// 使用 WordCard 支持 FSRS 算法。
   /// 当会话恢复时，会重新计算所有卡片的 isDue 状态。
-  ///
-  /// _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5_
   Future<StudySession?> getOrCreateTodaySession(
     String dictName,
     StudySettings settings,
@@ -1284,8 +1450,11 @@ class DBHelper {
       );
 
       // A. 动态追加待复习单词：确保所有到期的复习词都在队列中
-      // 使用 FSRS getDueCards 获取所有到期的复习词
-      final currentDueCards = await getDueCards(dictName, limit: 100);
+      // 使用排除今日新词的方法，避免今日新词被重复添加
+      final currentDueCards = await getDueCardsExcludeTodayNew(
+        dictName,
+        limit: 100,
+      );
       final wordIdsInQueue = queue.map((w) => w.wordId).toSet();
 
       int nextIdx = 0;
@@ -1300,13 +1469,22 @@ class DBHelper {
       int addedReviewCount = 0;
       for (var card in currentDueCards) {
         if (!wordIdsInQueue.contains(card.wordId)) {
+          // 计算该单词在队列中的出现次数
+          final occurrenceResult = await db.rawQuery(
+            'SELECT COUNT(*) as count FROM study_session_queue WHERE session_id = ? AND word_id = ?',
+            [sessionId, card.wordId],
+          );
+          final occurrence = (occurrenceResult.first['count'] as int? ?? 0) + 1;
+
           await db.insert('study_session_queue', {
             'session_id': sessionId,
             'word_id': card.wordId,
             'queue_index': nextIdx++,
             'is_review': 1,
             'is_done': 0,
+            'occurrence': occurrence,
           });
+          card.occurrence = occurrence;
           queue.add(card);
           addedReviewCount++;
         }
@@ -1331,6 +1509,7 @@ class DBHelper {
             'queue_index': nextIdx++,
             'is_review': 0,
             'is_done': 0,
+            'occurrence': 1, // 新词首次出现
           });
           queue.add(nextNew);
           addedNewCount++;
@@ -1402,6 +1581,7 @@ class DBHelper {
         'queue_index': i,
         'is_review': queue[i].isReview ? 1 : 0,
         'is_done': 0,
+        'occurrence': 1, // 初始队列中的单词都是首次出现
       });
     }
 
@@ -1430,8 +1610,9 @@ class DBHelper {
       SELECT ssq.*, w.word, 
              usp.due, usp.stability, usp.difficulty,
              usp.elapsed_days, usp.scheduled_days, usp.reps, usp.lapses,
-             usp.state, usp.last_review,
-             ssq.is_review as is_review_flag
+             usp.state, usp.last_review, usp.first_learned_date,
+             ssq.is_review as is_review_flag,
+             ssq.occurrence
       FROM study_session_queue ssq
       JOIN words w ON ssq.word_id = w.id
       JOIN study_session ss ON ssq.session_id = ss.id
@@ -1445,6 +1626,7 @@ class DBHelper {
     return results.map((row) {
       final wordId = row['word_id'] as int;
       final word = row['word'] as String;
+      final occurrence = row['occurrence'] as int? ?? 1;
 
       // 检查是否有 FSRS 数据
       final hasFsrsData =
@@ -1465,6 +1647,8 @@ class DBHelper {
           'lapses': row['lapses'] as int? ?? 0,
           'state': row['state'] as int? ?? 0,
           'last_review': row['last_review'] as String?,
+          'first_learned_date': row['first_learned_date'] as String?,
+          'occurrence': occurrence,
         });
       } else {
         // 没有 FSRS 数据，创建新卡片
@@ -1472,6 +1656,7 @@ class DBHelper {
           wordId: wordId,
           word: word,
           dictName: dictName,
+          occurrence: occurrence,
           // 使用默认的 FSRS Card（新卡片状态）
         );
       }
@@ -1560,6 +1745,8 @@ class DBHelper {
   }
 
   /// 添加单词到会话队列（用于"没记住"时加入队列末尾）
+  ///
+  /// 会自动计算该单词在队列中的出现次数（occurrence）
   Future<void> addWordToSessionQueue(int sessionId, int wordId) async {
     final db = await database;
 
@@ -1570,79 +1757,30 @@ class DBHelper {
     );
     final nextIndex = (maxResult.first['max_idx'] as int? ?? -1) + 1;
 
+    // 计算该单词在队列中的出现次数
+    final occurrenceResult = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM study_session_queue WHERE session_id = ? AND word_id = ?',
+      [sessionId, wordId],
+    );
+    final occurrence = (occurrenceResult.first['count'] as int? ?? 0) + 1;
+
     await db.insert('study_session_queue', {
       'session_id': sessionId,
       'word_id': wordId,
       'queue_index': nextIndex,
       'is_review': 1,
       'is_done': 0,
+      'occurrence': occurrence,
     });
 
     print(
-      'DEBUG: Dynamic Append: WordId $wordId added to queue at index $nextIndex',
+      'DEBUG: Dynamic Append: WordId $wordId added to queue at index $nextIndex, occurrence: $occurrence',
     );
   }
 
   /// 获取下一个新词（用于补充队列）
   ///
-  /// 此方法已废弃，请使用 [getNextNewWordCard] 替代。
-  /// FSRS 算法提供更精准的记忆预测能力。
-  ///
-  /// _Requirements: 3.1_
-  @Deprecated(
-    'Use getNextNewWordCard instead. SM-2 algorithm has been replaced by FSRS.',
-  )
-  Future<WordProgress?> getNextNewWord(
-    String dictName,
-    StudySettings settings,
-    List<WordProgress> currentQueue,
-  ) async {
-    final db = await database;
-
-    // 获取当前队列中的所有 word_id
-    final existingIds = currentQueue.map((w) => w.wordId).toList();
-    final placeholders = existingIds.isNotEmpty
-        ? existingIds.map((_) => '?').join(',')
-        : '0';
-
-    String orderBy;
-    switch (settings.mode) {
-      case StudyMode.sequential:
-        orderBy = 'w.id ASC';
-        break;
-      case StudyMode.byDifficulty:
-        orderBy = 'w.difficulty DESC, w.id ASC';
-        break;
-      case StudyMode.random:
-        orderBy = 'RANDOM()';
-        break;
-    }
-
-    final results = await db.rawQuery(
-      '''
-      SELECT w.id as word_id, w.word, ? as dict_name
-      FROM words w
-      JOIN word_dict_rel rel ON w.id = rel.word_id
-      JOIN dictionaries d ON rel.dict_id = d.id
-      LEFT JOIN user_study_progress usp ON w.id = usp.word_id AND usp.dict_name = ?
-      WHERE d.name = ? 
-        AND usp.word_id IS NULL
-        AND w.id NOT IN ($placeholders)
-      ORDER BY $orderBy
-      LIMIT 1
-    ''',
-      [dictName, dictName, dictName, ...existingIds],
-    );
-
-    if (results.isEmpty) return null;
-    return WordProgress.fromMap(results.first);
-  }
-
-  /// 获取下一个新词（用于补充队列）- FSRS 版本
-  ///
   /// 返回 WordCard 对象，用于 FSRS 会话队列。
-  ///
-  /// _Requirements: 10.3_
   Future<WordCard?> getNextNewWordCard(
     String dictName,
     StudySettings settings,

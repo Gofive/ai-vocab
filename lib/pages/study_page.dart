@@ -10,51 +10,31 @@ import 'package:ai_vocab/theme/app_theme.dart';
 import 'package:ai_vocab/providers/dict_provider.dart';
 import 'package:ai_vocab/services/ad_service.dart';
 import 'package:ai_vocab/services/fsrs_service.dart';
+import 'package:ai_vocab/services/review_reminder_service.dart';
 import 'package:ai_vocab/pages/learned_words_page.dart';
+import 'package:ai_vocab/widgets/review_reminder_badge.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:fsrs/fsrs.dart'
     hide State; // Hide State to avoid conflict with Flutter's State
 
 /// 熟悉度等级 -> FSRS Rating 映射
-/// _Requirements: 4.2, 4.3, 4.4_
 enum FamiliarityLevel {
-  mastered, // 记住了 -> Rating.easy
-  familiar, // 有印象 -> Rating.good
-  unfamiliar, // 没记住 -> Rating.again
+  mastered, // 记住了 -> Rating.good
+  familiar, // 有困难 -> Rating.hard
+  unfamiliar, // 不认识 -> Rating.again
 }
 
 extension FamiliarityLevelExt on FamiliarityLevel {
-  /// 获取 SM-2 quality 值（用于兼容旧代码）
-  ///
-  /// 此属性已废弃，请使用 [fsrsRating] 替代。
-  /// SM-2 算法已被 FSRS 替代。
-  ///
-  /// _Requirements: 3.1_
-  @Deprecated(
-    'Use fsrsRating instead. SM-2 algorithm has been replaced by FSRS.',
-  )
-  int get quality {
-    switch (this) {
-      case FamiliarityLevel.mastered:
-        return 5;
-      case FamiliarityLevel.familiar:
-        return 3;
-      case FamiliarityLevel.unfamiliar:
-        return 1;
-    }
-  }
-
   /// 获取 FSRS Rating 值
-  /// _Requirements: 4.2, 4.3, 4.4_
   Rating get fsrsRating {
     switch (this) {
       case FamiliarityLevel.mastered:
-        return Rating.easy; // 记住了 -> Easy
+        return Rating.good; // 记住了 -> 正常间隔延长
       case FamiliarityLevel.familiar:
-        return Rating.good; // 有印象 -> Good
+        return Rating.hard; // 有困难 -> 间隔稍微延长，难度增加
       case FamiliarityLevel.unfamiliar:
-        return Rating.again; // 没记住 -> Again
+        return Rating.again; // 不认识 -> 重新学习
     }
   }
 }
@@ -149,7 +129,6 @@ class _StudyStatsPage extends StatefulWidget {
 }
 
 class _StudyStatsPageState extends State<_StudyStatsPage> {
-  TodaySessionStatus _sessionStatus = TodaySessionStatus.noSession;
   bool _loading = true;
   int _streakDays = 0;
   List<DateTime> _weekDates = [];
@@ -163,6 +142,24 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
     _loadSessionStatus();
     _loadStreakData();
     _loadDueReviewCount();
+    // 更新复习提醒服务的词典
+    ReviewReminderService().updateDictName(widget.dictName);
+    // 监听复习提醒服务变化，触发 UI 刷新
+    ReviewReminderService().addListener(_onReminderChanged);
+  }
+
+  @override
+  void dispose() {
+    ReviewReminderService().removeListener(_onReminderChanged);
+    super.dispose();
+  }
+
+  void _onReminderChanged() {
+    // 复习提醒服务数据变化时，刷新页面
+    if (mounted) {
+      widget.onRefresh();
+      _loadDueReviewCount();
+    }
   }
 
   void _initWeekDates() {
@@ -199,6 +196,8 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
         _dueReviewCount = dueCards.length;
       });
     }
+    // 同步更新复习提醒服务
+    ReviewReminderService().refresh();
   }
 
   @override
@@ -207,15 +206,16 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
     // 词典变化时重新加载状态
     if (oldWidget.dictName != widget.dictName) {
       _loadSessionStatus();
+      // 更新复习提醒服务的词典
+      ReviewReminderService().updateDictName(widget.dictName);
     }
   }
 
   Future<void> _loadSessionStatus() async {
     setState(() => _loading = true);
-    final status = await DBHelper().getTodaySessionStatus(widget.dictName);
+    await DBHelper().getTodaySessionStatus(widget.dictName);
     if (mounted) {
       setState(() {
-        _sessionStatus = status;
         _loading = false;
       });
     }
@@ -251,10 +251,8 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
                     _buildTaskCards(context, primaryColor),
                     const SizedBox(height: 16),
 
-                    // 待复习词汇统计组件
-                    if (_dueReviewCount > 0)
-                      _buildDueReviewCard(context, primaryColor),
-                    if (_dueReviewCount > 0) const SizedBox(height: 16),
+                    // 复习提醒卡片（使用新的提醒组件）
+                    const ReviewReminderCard(),
 
                     // 词库总进度
                     _buildTotalProgress(context, primaryColor),
@@ -398,7 +396,7 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
                   context,
                   '复习巩固',
                   '$reviewedCount/$reviewTotal',
-                  Colors.orange,
+                  context.warningColor,
                 ),
               ),
             ],
@@ -501,61 +499,23 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
     );
   }
 
-  /// 待复习词汇统计组件
-  Widget _buildDueReviewCard(BuildContext context, Color primaryColor) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: context.surfaceColor,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: context.dividerColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.refresh, size: 16, color: Colors.orange),
-              const SizedBox(width: 6),
-              Text(
-                '待复习词汇',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: context.textPrimary,
-                ),
-              ),
-              const Spacer(),
-              Text(
-                '$_dueReviewCount 个',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.orange,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            '这些单词已到复习时间，建议及时复习以巩固记忆',
-            style: TextStyle(fontSize: 11, color: context.textSecondary),
-          ),
-        ],
-      ),
-    );
-  }
-
   /// 底部按钮区域
   Widget _buildBottomButtons(BuildContext context, Color primaryColor) {
-    // 如果今日已完成，显示完成状态
-    if (_sessionStatus == TodaySessionStatus.completed) {
-      // 如果有待复习词，显示继续复习按钮
-      if (_dueReviewCount > 0) {
-        return _buildReviewButton(context, primaryColor);
-      }
+    final progress = widget.progress;
+    final newWordsGoal = progress.settings.dailyWords;
+    final learnedNew = progress.todayNewCount;
+    final reviewedCount = progress.todayReviewedCount;
+    final reviewTotal = progress.todayReviewTotal;
 
-      // 否则显示完成状态
+    // 判断任务完成状态
+    final newWordsCompleted = learnedNew >= newWordsGoal;
+    final reviewCompleted = reviewTotal == 0 || reviewedCount >= reviewTotal;
+    final allCompleted =
+        newWordsCompleted && reviewCompleted && _dueReviewCount == 0;
+    final nothingStarted = learnedNew == 0 && reviewedCount == 0;
+
+    // 全部完成：显示完成状态
+    if (allCompleted) {
       return Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(vertical: 14),
@@ -581,49 +541,35 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
       );
     }
 
-    // 如果有待复习词，显示两个按钮
-    if (_dueReviewCount > 0) {
-      return Column(
-        children: [
-          // 继续复习按钮
-          _buildReviewButton(context, primaryColor),
-          const SizedBox(height: 8),
-          // 开始学习按钮
-          _buildStartButton(
-            context,
-            primaryColor,
-            _sessionStatus == TodaySessionStatus.inProgress ? '继续学习' : '开始学习',
-            isSecondary: true,
-          ),
-        ],
-      );
+    // 确定按钮文案和样式
+    String buttonLabel;
+    Color buttonColor;
+    IconData buttonIcon;
+
+    if (nothingStarted) {
+      // 今日新词和复习巩固的完成量都是0：开始学习
+      buttonLabel = '开始学习';
+      buttonColor = primaryColor;
+      buttonIcon = Icons.menu_book;
+    } else if (!newWordsCompleted) {
+      // 今日新词任务未完成：继续学习
+      buttonLabel = '继续学习';
+      buttonColor = primaryColor;
+      buttonIcon = Icons.menu_book;
+    } else {
+      // 今日新词任务完成，复习巩固未完成：继续复习
+      buttonLabel = '继续复习';
+      buttonColor = Colors.orange;
+      buttonIcon = Icons.refresh;
     }
 
-    // 默认显示开始学习按钮
-    return _buildStartButton(
-      context,
-      primaryColor,
-      _sessionStatus == TodaySessionStatus.inProgress ? '继续学习' : '开始学习',
-    );
-  }
-
-  /// 继续复习按钮
-  Widget _buildReviewButton(BuildContext context, Color primaryColor) {
     return SizedBox(
       width: double.infinity,
       height: 50,
       child: ElevatedButton(
-        onPressed: () async {
-          // TODO: 实现复习页面跳转
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('复习功能即将上线'),
-              duration: Duration(seconds: 2),
-            ),
-          );
-        },
+        onPressed: () => _startStudySession(context),
         style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.orange,
+          backgroundColor: buttonColor,
           foregroundColor: Colors.white,
           elevation: 0,
           shape: RoundedRectangleBorder(
@@ -633,13 +579,32 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.refresh, size: 24),
+            Icon(buttonIcon, size: 24),
             const SizedBox(width: 8),
             Text(
-              '继续复习 ($_dueReviewCount)',
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+              buttonLabel,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  /// 开始学习会话
+  void _startStudySession(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StudySessionPage(
+          dictName: widget.dictName,
+          settings: widget.progress.settings,
+          onComplete: () {
+            widget.onRefresh();
+            _loadSessionStatus();
+            _loadStreakData();
+            _loadDueReviewCount();
+          },
         ),
       ),
     );
@@ -763,65 +728,6 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
 
   bool _isSameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
-  }
-
-  Widget _buildStartButton(
-    BuildContext context,
-    Color primaryColor,
-    String label, {
-    bool isSecondary = false,
-  }) {
-    return SizedBox(
-      width: double.infinity,
-      height: 50,
-      child: ElevatedButton(
-        onPressed: () async {
-          await Navigator.push(
-            context,
-            MaterialPageRoute(
-              builder: (_) => StudySessionPage(
-                dictName: widget.dictName,
-                settings: widget.progress.settings,
-                onComplete: () {
-                  widget.onRefresh();
-                  _loadSessionStatus();
-                  _loadStreakData();
-                  _loadDueReviewCount();
-                },
-              ),
-            ),
-          );
-        },
-        style: ElevatedButton.styleFrom(
-          backgroundColor: isSecondary ? context.surfaceColor : primaryColor,
-          foregroundColor: isSecondary ? context.textPrimary : Colors.white,
-          elevation: 0,
-          side: isSecondary ? BorderSide(color: context.dividerColor) : null,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(25),
-          ),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.menu_book,
-              size: 24,
-              color: isSecondary ? context.textPrimary : Colors.white,
-            ),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w900,
-                color: isSecondary ? context.textPrimary : Colors.white,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 
@@ -1340,8 +1246,14 @@ class _StudySessionPageState extends State<StudySessionPage> {
     // _Requirements: 4.6_
     bool addedToQueue = false;
     if (level == FamiliarityLevel.unfamiliar) {
-      // 创建一个复习卡片加入队列
-      final repeatCard = currentWordCard.copyWith();
+      // 计算新的 occurrence（当前队列中该单词的出现次数 + 1）
+      final currentOccurrence = _session!.queue
+          .where((w) => w.wordId == currentWordCard.wordId)
+          .length;
+      final newOccurrence = currentOccurrence + 1;
+
+      // 创建一个复习卡片加入队列，更新 occurrence
+      final repeatCard = currentWordCard.copyWith(occurrence: newOccurrence);
       setState(() {
         _session!.queue.add(repeatCard);
       });
@@ -1350,7 +1262,7 @@ class _StudySessionPageState extends State<StudySessionPage> {
       addedToQueue = true;
 
       print(
-        'DEBUG: 单词 "${currentWordCard.word}" 点击不认识，已加入队列末尾 (isNewWord: $isNewWord)',
+        'DEBUG: 单词 "${currentWordCard.word}" 点击不认识，已加入队列末尾 (isNewWord: $isNewWord, occurrence: $newOccurrence)',
       );
     }
 
@@ -1640,7 +1552,7 @@ class _WordCardPageState extends State<_WordCardPage>
                       widget.isReview ? '复习巩固' : '词汇背诵',
                       style: TextStyle(
                         color: widget.isReview
-                            ? Colors.orange
+                            ? context.warningColor
                             : widget.primaryColor,
                         fontWeight: FontWeight.w600,
                       ),
@@ -1731,15 +1643,7 @@ class _WordCardPageState extends State<_WordCardPage>
             '已充分掌握',
             style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
           ),
-          style: OutlinedButton.styleFrom(
-            foregroundColor: context.textPrimary,
-            padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 14),
-            backgroundColor: Colors.indigo,
-            side: BorderSide(width: 1, color: Colors.indigo),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(30),
-            ),
-          ),
+          style: context.outlineButtonStyle,
         ),
         const SizedBox(height: 48),
       ],

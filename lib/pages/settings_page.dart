@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/cupertino.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
 import 'package:ai_vocab/db_helper.dart';
 
@@ -120,34 +119,24 @@ class _SettingsPageState extends State<SettingsPage> {
                   ),
                   decoration: BoxDecoration(
                     color: primaryColor,
-                    borderRadius: BorderRadius.circular(8),
+                    borderRadius: BorderRadius.circular(context.radiusSm),
                   ),
-                  child: const Text(
+                  child: Text(
                     'PRO',
-                    style: TextStyle(
+                    style: context.textTheme.labelSmall?.copyWith(
                       color: Colors.white,
-                      fontSize: 8,
                       fontWeight: FontWeight.bold,
+                      fontSize: 8,
                     ),
                   ),
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Text(
-            '学习者',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: context.textPrimary,
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'learner@example.com',
-            style: TextStyle(fontSize: 14, color: context.textSecondary),
-          ),
+          SizedBox(height: context.spaceMd),
+          Text('学习者', style: context.textTheme.headlineSmall),
+          SizedBox(height: context.spaceXs),
+          Text('learner@example.com', style: context.textTheme.bodySmall),
         ],
       ),
     );
@@ -193,38 +182,19 @@ class _SettingsPageState extends State<SettingsPage> {
     required bool changePositive,
   }) {
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: context.surfaceColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: context.dividerColor.withOpacity(0.5),
-          width: 1,
-        ),
-      ),
+      padding: EdgeInsets.all(context.spaceLg),
+      decoration: context.cardDecoration,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [Icon(icon, color: iconColor, size: 24)],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              color: context.textSecondary,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          const SizedBox(height: 4),
+          Icon(icon, color: iconColor, size: 24),
+          SizedBox(height: context.spaceSm),
+          Text(label, style: context.textTheme.labelMedium),
+          SizedBox(height: context.spaceXs),
           Text(
             value,
-            style: TextStyle(
-              fontSize: 28,
+            style: context.textTheme.headlineMedium?.copyWith(
               fontWeight: FontWeight.bold,
-              color: context.textPrimary,
             ),
           ),
         ],
@@ -233,22 +203,12 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Widget _buildSectionTitle(String title) {
-    return Text(
-      title,
-      style: TextStyle(
-        fontSize: 14,
-        fontWeight: FontWeight.w500,
-        color: context.textSecondary,
-      ),
-    );
+    return Text(title, style: context.textTheme.labelMedium);
   }
 
   Widget _buildAccountSection(BuildContext context, Color primaryColor) {
     return Container(
-      decoration: BoxDecoration(
-        color: context.surfaceColor,
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: context.cardDecoration,
       child: Column(
         children: [
           _buildSettingItem(
@@ -283,10 +243,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildPreferencesSection(BuildContext context, Color primaryColor) {
     return Container(
-      decoration: BoxDecoration(
-        color: context.surfaceColor,
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: context.cardDecoration,
       child: Column(
         children: [
           _buildSettingItem(
@@ -319,10 +276,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildOtherSection(BuildContext context, Color primaryColor) {
     return Container(
-      decoration: BoxDecoration(
-        color: context.surfaceColor,
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: context.cardDecoration,
       child: Column(
         children: [
           _buildSettingItem(
@@ -375,6 +329,24 @@ class _SettingsPageState extends State<SettingsPage> {
               }
             },
           ),
+          _buildDivider(context),
+          _buildSettingItem(
+            context,
+            icon: Icons.table_chart_outlined,
+            iconColor: Colors.purple,
+            title: 'Debug: 打印关键表数据',
+            onTap: () async {
+              final dictName = await DBHelper().getCurrentDict();
+              if (dictName != null) {
+                await DBHelper().debugPrintTables(dictName);
+                if (context.mounted) {
+                  ScaffoldMessenger.of(
+                    context,
+                  ).showSnackBar(const SnackBar(content: Text('已打印到控制台')));
+                }
+              }
+            },
+          ),
         ],
       ),
     );
@@ -392,32 +364,27 @@ class _SettingsPageState extends State<SettingsPage> {
   }) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(context.radiusLg),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        padding: EdgeInsets.symmetric(
+          horizontal: context.spaceLg,
+          vertical: context.spaceMd + 2,
+        ),
         child: Row(
           children: [
             Icon(icon, color: iconColor, size: 22),
-            const SizedBox(width: 14),
+            SizedBox(width: context.spaceMd + 2),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    title,
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w500,
-                      color: context.textPrimary,
-                    ),
-                  ),
+                  Text(title, style: context.textTheme.titleSmall),
                   if (subtitle != null) ...[
                     const SizedBox(height: 2),
                     Text(
                       subtitle,
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: subtitleColor ?? context.textSecondary,
+                      style: context.textTheme.bodySmall?.copyWith(
+                        color: subtitleColor,
                       ),
                     ),
                   ],
@@ -439,27 +406,19 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildDivider(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(left: 50),
-      child: Divider(height: 1, color: context.dividerColor.withOpacity(0.5)),
+      child: Divider(height: 1, color: context.dividerColor),
     );
   }
 
   Widget _buildLogoutButton(BuildContext context, Color primaryColor) {
-    return Container(
+    return SizedBox(
       width: double.infinity,
       height: 50,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: primaryColor.withOpacity(0.5), width: 1.5),
-      ),
-      child: TextButton(
+      child: OutlinedButton(
         onPressed: () {
           // 退出登录逻辑
         },
-        style: TextButton.styleFrom(
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
-        ),
+        style: context.outlineButtonStyle,
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -483,29 +442,17 @@ class _SettingsPageState extends State<SettingsPage> {
     return Center(
       child: Column(
         children: [
-          Text(
-            '版本 1.0.0 (1001)',
-            style: TextStyle(fontSize: 12, color: context.textSecondary),
-          ),
+          Text('版本 1.0.0 (1001)', style: context.textTheme.labelSmall),
           const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text(
-                '隐私政策',
-                style: TextStyle(fontSize: 12, color: context.textSecondary),
-              ),
+              Text('隐私政策', style: context.textTheme.labelSmall),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Text(
-                  '|',
-                  style: TextStyle(fontSize: 12, color: context.textSecondary),
-                ),
+                child: Text('|', style: context.textTheme.labelSmall),
               ),
-              Text(
-                '服务条款',
-                style: TextStyle(fontSize: 12, color: context.textSecondary),
-              ),
+              Text('服务条款', style: context.textTheme.labelSmall),
             ],
           ),
         ],

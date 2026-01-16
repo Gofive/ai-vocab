@@ -4,6 +4,8 @@ import 'package:ai_vocab/pages/home_page.dart';
 import 'package:ai_vocab/theme/app_theme.dart';
 import 'package:ai_vocab/services/ad_service.dart';
 import 'package:ai_vocab/services/migration_service.dart';
+import 'package:ai_vocab/services/review_reminder_service.dart';
+import 'package:ai_vocab/db_helper.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -82,9 +84,31 @@ class _AppInitializerState extends State<_AppInitializer> {
         await _showMigrationDialog();
       }
 
+      // 初始化复习提醒服务
+      await _initReviewReminderService();
+
       setState(() {
         _migrationChecked = true;
       });
+    }
+  }
+
+  /// 初始化复习提醒服务
+  Future<void> _initReviewReminderService() async {
+    try {
+      final db = DBHelper();
+      final currentDict = await db.getCurrentDict();
+      debugPrint('ReviewReminder: 当前词典 = $currentDict');
+      if (currentDict != null) {
+        await ReviewReminderService().initialize(currentDict);
+        debugPrint(
+          'ReviewReminder: 服务初始化完成，待复习数量 = ${ReviewReminderService().dueCount}',
+        );
+      } else {
+        debugPrint('ReviewReminder: 未选择词典，跳过初始化');
+      }
+    } catch (e) {
+      debugPrint('初始化复习提醒服务失败: $e');
     }
   }
 
