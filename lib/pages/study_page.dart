@@ -558,7 +558,8 @@ class _StudyStatsPageState extends State<_StudyStatsPage> {
       buttonIcon = Icons.menu_book;
     } else {
       // 今日新词任务完成，复习巩固未完成：继续复习
-      buttonLabel = '继续复习';
+      // 显示待复习数量
+      buttonLabel = _dueReviewCount > 0 ? '继续复习 ($_dueReviewCount)' : '继续复习';
       buttonColor = Colors.orange;
       buttonIcon = Icons.refresh;
     }
